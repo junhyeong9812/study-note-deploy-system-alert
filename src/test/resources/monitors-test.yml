@@ -1,0 +1,3 @@
+monitors:
+  - { name: front, url: "http://example.invalid/" }
+  - { name: llm, url: "http://example.invalid/health" }
