@@ -49,3 +49,19 @@ docker compose up -d --build alert-blue nginx
 ```
 
 테스트: `./gradlew test`
+
+## 집 밖의 감시자 (`edge/watchdog.sh`)
+
+알림 서버는 집 안에 있어서 집 전체나 자기 자신이 죽으면 스스로 알릴 수 없다. 엣지 서버에서 1분마다 이 스크립트를 돌려 사이트와 알림 서버를 직접 확인한다.
+
+- 3번 연속(3분) 안 보이면 엣지가 디스코드로 직접 알리고, 다시 보이면 끊긴 시간을 알린다.
+- 그보다 짧은 끊김은 알리지 않고 `outages.log` 에 시작·끝·길이만 남긴다(끊김 빈도를 재는 용도).
+- 사이트가 안 보일 때는 알림 서버 알림을 따로 보내지 않는다(같은 원인으로 둘 다 실패하므로).
+
+설치(엣지 서버에서):
+```
+sudo install -m 0755 watchdog.sh /usr/local/bin/alert-watchdog
+sudo install -m 0600 /dev/null /etc/alert-watchdog.env     # HOME_TARGET · DISCORD_WEBHOOK_URL · ALERT_SECRET 를 적는다
+sudo mkdir -p /var/lib/alert-watchdog
+echo '* * * * * root /usr/local/bin/alert-watchdog' | sudo tee /etc/cron.d/alert-watchdog
+```
