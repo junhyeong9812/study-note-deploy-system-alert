@@ -12,7 +12,9 @@ import org.springframework.mail.javamail.JavaMailSender
 import tools.jackson.databind.ObjectMapper
 import xyz.junproject.alert.event.EventIntake
 import xyz.junproject.alert.incident.IncidentStore
+import xyz.junproject.alert.monitor.ActiveSlot
 import xyz.junproject.alert.monitor.HttpMonitorProbe
+import xyz.junproject.alert.monitor.HttpServingSlotCheck
 import xyz.junproject.alert.monitor.MonitorRound
 import xyz.junproject.alert.monitor.MonitorTracker
 import xyz.junproject.alert.monitor.MonitorsFile
@@ -56,11 +58,28 @@ class AlertConfiguration {
     @Bean
     fun incidentStore(@Value("\${alert.data-path:data/alert.db}") dataPath: String): StoreHolder = try {
         File(dataPath).absoluteFile.parentFile?.mkdirs()
-        val dataSource = SingleConnectionDataSource("jdbc:sqlite:$dataPath", true)
+        val dataSource = SingleConnectionDataSource("jdbc:sqlite:$dataPath", true)   // 연결 하나 — 접근은 IncidentStore 가 한 번에 하나씩으로 묶는다
         StoreHolder(IncidentStore(JdbcTemplate(dataSource)))
     } catch (error: Exception) {
         log.error("alert:alert:incident store unavailable — running without history: {}", error.message)
         StoreHolder(null)
+    }
+
+    /**
+     * 무중단 배포의 자리 이름(compose 가 준다)과, 지금 어느 자리가 요청을 받는지 물어볼 프록시 주소.
+     * 자리 이름이 없으면 단독 실행으로 보고 항상 활성. 이름은 있는데 물어볼 주소가 없으면 뜨지 않는다.
+     */
+    @Bean
+    fun activeSlot(
+        @Value("\${alert.slot:}") slot: String,
+        @Value("\${alert.slot-probe-url:}") slotProbeUrl: String,
+    ): ActiveSlot {
+        if (slot.isBlank()) return ActiveSlot.always()
+        require(slotProbeUrl.startsWith("http://") || slotProbeUrl.startsWith("https://")) {
+            "ALERT_SLOT 이 설정됐는데 ALERT_SLOT_PROBE_URL 이 http(s) 주소가 아니다"
+        }
+        log.info("alert:alert:slot {} — active only while the proxy serves this slot", slot)
+        return ActiveSlot(slot, HttpServingSlotCheck(slotProbeUrl))
     }
 
     @Bean
@@ -68,12 +87,14 @@ class AlertConfiguration {
         objectMapper: ObjectMapper,
         notifier: FallbackNotifier,
         storeHolder: StoreHolder,
+        activeSlot: ActiveSlot,
         @Value("\${alert.monitors-file:classpath:monitors.yml}") monitorsFile: Resource,
     ): MonitorRound {
         // 형식이 틀리거나 가리킨 환경변수가 없으면 여기서 예외 → 기동 실패(조용히 대상을 빼지 않는다)
         val definitions = MonitorsFile.parse(monitorsFile.getContentAsString(StandardCharsets.UTF_8), System::getenv)
         log.info("alert:alert:watching {} monitors: {}", definitions.size, definitions.joinToString(", ") { it.name })
-        return MonitorRound(definitions, HttpMonitorProbe(objectMapper), MonitorTracker(), notifier, storeHolder.store)
+        return MonitorRound(definitions, HttpMonitorProbe(objectMapper), MonitorTracker(), notifier, storeHolder.store,
+            activeSlot = activeSlot)
     }
 
     @Bean

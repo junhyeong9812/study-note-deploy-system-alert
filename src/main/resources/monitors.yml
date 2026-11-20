@@ -2,11 +2,11 @@
 # 주소는 여기에 적지 않고 서버 .env 의 환경변수로 가리킨다(repo 에 IP 금지).
 # expect: status(200이면 정상) · components(200이고 본문의 components 가 전부 UP)
 monitors:
-  - { name: front,           host: front,   url: "${MONITOR_FRONT_URL}/" }
-  - { name: backend,         host: backend, url: "${MONITOR_BACKEND_URL}/actuator/health" }
-  - { name: backend-deps,    host: backend, url: "${MONITOR_BACKEND_URL}/api/health/dependencies", expect: components }
-  - { name: llm,             host: llm,     url: "${MONITOR_LLM_URL}/health" }
-  - { name: deploy-master,   host: front,   url: "${MONITOR_DEPLOY_MASTER_URL}/health" }
-  - { name: deploy-agent-front,   host: front,   url: "${MONITOR_DEPLOY_AGENT_FRONT_URL}/health" }
-  - { name: deploy-agent-backend, host: backend, url: "${MONITOR_DEPLOY_AGENT_BACKEND_URL}/health" }
-  - { name: deploy-agent-llm,     host: llm,     url: "${MONITOR_DEPLOY_AGENT_LLM_URL}/health" }
+  - { name: front,           url: "${MONITOR_FRONT_URL}/" }
+  - { name: backend,         url: "${MONITOR_BACKEND_URL}/actuator/health" }
+  - { name: backend-deps,    url: "${MONITOR_BACKEND_URL}/api/health/dependencies", expect: components }
+  - { name: llm,             url: "${MONITOR_LLM_URL}/health" }
+  - { name: deploy-master,   url: "${MONITOR_DEPLOY_MASTER_URL}/health" }
+  - { name: deploy-agent-front,   url: "${MONITOR_DEPLOY_AGENT_FRONT_URL}/health" }
+  - { name: deploy-agent-backend, url: "${MONITOR_DEPLOY_AGENT_BACKEND_URL}/health" }
+  - { name: deploy-agent-llm,     url: "${MONITOR_DEPLOY_AGENT_LLM_URL}/health" }

@@ -21,14 +21,19 @@ class HttpMonitorProbe(
 
     override fun check(definition: MonitorDefinition): ProbeResult = try {
         val request = HttpRequest.newBuilder(URI.create(definition.url)).timeout(timeout).GET().build()
-        val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+        // 본문까지 포함해 시간 제한 안에 끝나야 한다(헤더만 보내고 본문을 끄는 대상도 실패)
+        val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+            .get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS)
         when {
             response.statusCode() != 200 -> ProbeResult.failed("status ${response.statusCode()}${describe(response.body())}")
             definition.expect == MonitorDefinition.Expectation.COMPONENTS -> componentsResult(response.body())
             else -> ProbeResult.HEALTHY
         }
+    } catch (error: java.util.concurrent.TimeoutException) {
+        ProbeResult.failed("${timeout.seconds}초 안에 응답이 끝나지 않았다")
     } catch (error: Exception) {
-        ProbeResult.failed(error.message?.take(120) ?: error.javaClass.simpleName)
+        val cause = (error as? java.util.concurrent.ExecutionException)?.cause ?: error
+        ProbeResult.failed(cause.message?.take(120) ?: cause.javaClass.simpleName)
     }
 
     /** 실패 응답 본문에 status 문자열이 있으면 이유로 덧붙인다(예: llm 의 model_missing·ollama_unreachable) */

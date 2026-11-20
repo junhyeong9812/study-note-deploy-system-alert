@@ -31,7 +31,7 @@ class AlertControllerTest {
     @TestConfiguration
     class Channels {
         @Bean @Primary
-        fun testNotifier() = xyz.junproject.alert.notify.FallbackNotifier(listOf(inbox), pause = {})
+        fun testNotifier() = xyz.junproject.alert.notify.FallbackNotifier(listOf(inbox), pause = {}, worker = { it.run() })
     }
 
     companion object {
@@ -58,13 +58,14 @@ class AlertControllerTest {
     @Test
     fun `사건을 받으면 발송하고 같은 key 의 반복은 발송하지 않는다`() {
         received.clear()
-        val body = """{"source":"ci-cd","kind":"deploy_failed","severity":"critical","key":"controller-test:llm","title":"배포 실패 llm","detail":"단계 ci_test"}"""
+        val key = "controller-test:${System.nanoTime()}"     // 기록 파일이 실행 사이에 남으므로 실행마다 다른 key
+        val body = """{"source":"ci-cd","kind":"deploy_failed","severity":"critical","key":"$key","title":"배포 실패 llm","detail":"단계 ci_test"}"""
         mockMvc.perform(event(body)).andExpect(status().isAccepted).andExpect(jsonPath("$.data.sent").value(true))
         mockMvc.perform(event(body)).andExpect(status().isAccepted).andExpect(jsonPath("$.data.sent").value(false))
         assertEquals(listOf("[ci-cd] 배포 실패 llm"), received.map { it.title })
         assertEquals(Notification.Severity.CRITICAL, received[0].severity)
         mockMvc.perform(get("/incidents").header("X-Alert-Secret", "test-secret"))
-            .andExpect(status().isOk).andExpect(jsonPath("$.data.incidents[0].key").value("controller-test:llm"))
+            .andExpect(status().isOk).andExpect(jsonPath("$.data.incidents[0].key").value(key))
     }
 
     @Test
@@ -82,5 +83,11 @@ class AlertControllerTest {
             .andExpect(status().isOk).andExpect(jsonPath("$.data.monitors.length()").value(2))
             .andExpect(jsonPath("$.data.monitors[0].status").value("UNKNOWN"))
             .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("example.invalid"))))
+    }
+
+    @Test
+    fun `정리 알림은 단독 실행(자리 이름 없음)에서는 감시를 끄지 않는다`() {
+        mockMvc.perform(post("/admin/drain")).andExpect(status().isOk)
+        mockMvc.perform(get("/health")).andExpect(jsonPath("$.active").value(true))
     }
 }

@@ -26,6 +26,8 @@ class AlertController(
     private val storeHolder: StoreHolder,
     @Value("\${alert.secret:}") private val secret: String,
 ) {
+    private val startedAt = Instant.now()
+
     private fun authorized(request: HttpServletRequest): Boolean {
         val provided = request.getHeader("X-Alert-Secret") ?: return false
         // 설정이 비어 있으면 항상 거절(fail-closed), 비교는 상수 시간
@@ -36,15 +38,28 @@ class AlertController(
     private fun invalid(detail: String) =
         ResponseEntity.status(422).body(mapOf("success" to false, "error" to mapOf("code" to "invalid_request", "detail" to detail)))
 
-    /** 감시 루프가 살아 있는가 — 마지막 한 바퀴가 2분 안이면 정상. 엣지의 감시자와 배포가 본다. */
+    /**
+     * 감시 루프가 살아 있는가 — 엣지의 감시자와 배포가 본다.
+     * - ok: 활성 자리이고 마지막 한 바퀴가 2분 안
+     * - starting: 뜬 지 2분이 안 됐고 아직 첫 바퀴 전
+     * - standby: 대기 자리(다른 자리가 감시한다). 프로세스는 정상이므로 200 — 다만 밖에서 이 값이 계속 보이면
+     *   아무도 감시하지 않는다는 뜻이라 엣지의 감시자는 이것을 실패로 센다
+     * - stalled(503): 활성인데 감시가 돌지 않는다
+     */
     @GetMapping("/health")
-    fun health(): ResponseEntity<Map<String, Any>> {
+    fun health(): ResponseEntity<Map<String, Any>> = health(Instant.now())
+
+    internal fun health(now: Instant): ResponseEntity<Map<String, Any>> {
         val lastRoundAt = round.lastRoundAt
-        val alive = round.draining || (lastRoundAt != null && Duration.between(lastRoundAt, Instant.now()) < Duration.ofMinutes(2))
-        val status = when { alive -> "ok"; lastRoundAt == null -> "starting"; else -> "stalled" }
-        val body = mapOf("status" to status, "last_round_at" to (lastRoundAt?.toString() ?: ""),
-            "draining" to round.draining)
-        return if (alive || lastRoundAt == null) ResponseEntity.ok(body) else ResponseEntity.status(503).body(body)
+        val fresh = lastRoundAt != null && Duration.between(lastRoundAt, now) < Duration.ofMinutes(2)
+        val status = when {
+            !round.active -> "standby"
+            fresh -> "ok"
+            lastRoundAt == null && Duration.between(startedAt, now) < Duration.ofMinutes(2) -> "starting"
+            else -> "stalled"
+        }
+        val body = mapOf("status" to status, "last_round_at" to (lastRoundAt?.toString() ?: ""), "active" to round.active)
+        return if (status == "stalled") ResponseEntity.status(503).body(body) else ResponseEntity.ok(body)
     }
 
     data class EventBody(val source: String? = null, val kind: String? = null, val severity: String? = null,
@@ -90,10 +105,13 @@ class AlertController(
         return ResponseEntity.ok(mapOf("success" to true, "data" to mapOf("incidents" to incidents)))
     }
 
-    /** 무중단 배포의 정리 알림 — 구 자리는 확인과 발송을 멈춘다(새 자리가 이어받는다). 자리의 로컬 포트로만 부른다. */
+    /**
+     * 무중단 배포의 정리 알림 — 구 자리는 곧바로 감시와 발송을 내려놓는다(새 자리가 이어받는다). 자리의 로컬 포트로만 부른다.
+     * 프록시가 여전히 이 자리로 보내고 있으면(전환이 되돌려졌거나 정지가 보류된 경우) 다음 바퀴에 다시 맡는다.
+     */
     @PostMapping("/admin/drain")
     fun drain(): Map<String, Any> {
-        round.draining = true
+        round.standDown()
         return mapOf("success" to true)
     }
 }

@@ -26,7 +26,7 @@ class EventIntakeTest {
     @Test
     fun `같은 key 는 10분 안에 한 번만 발송하고 접수는 전부 기록한다`(@TempDir directory: Path) {
         val store = IncidentStore(JdbcTemplate(SingleConnectionDataSource("jdbc:sqlite:${directory.resolve("alert.db")}", true)))
-        val intake = EventIntake(FallbackNotifier(listOf(channel), pause = {}), store, Duration.ofMinutes(10)) { now }
+        val intake = EventIntake(FallbackNotifier(listOf(channel), pause = {}, worker = { it.run() }), store, Duration.ofMinutes(10)) { now }
 
         assertTrue(intake.accept(event()))
         now = now.plusSeconds(60)
@@ -43,8 +43,21 @@ class EventIntakeTest {
     }
 
     @Test
+    fun `자리가 바뀌어도(새 프로세스) 같은 key 의 억제가 기록으로 이어진다`(@TempDir directory: Path) {
+        val store = IncidentStore(JdbcTemplate(SingleConnectionDataSource("jdbc:sqlite:${directory.resolve("alert.db")}", true)))
+        val notifier = FallbackNotifier(listOf(channel), pause = {}, worker = { it.run() })
+        assertTrue(EventIntake(notifier, store, Duration.ofMinutes(10)) { now }.accept(event()))
+        now = now.plusSeconds(120)
+        val afterSwitch = EventIntake(notifier, store, Duration.ofMinutes(10)) { now }      // 메모리가 비어 있는 새 자리
+        assertFalse(afterSwitch.accept(event()), "자리가 바뀌었다고 2분 만에 다시 발송했다")
+        now = now.plusSeconds(600)
+        assertTrue(afterSwitch.accept(event()))
+        assertEquals(2, received.size)
+    }
+
+    @Test
     fun `기록 저장소가 없어도 발송한다`() {
-        val intake = EventIntake(FallbackNotifier(listOf(channel), pause = {}), store = null) { now }
+        val intake = EventIntake(FallbackNotifier(listOf(channel), pause = {}, worker = { it.run() }), store = null) { now }
         assertTrue(intake.accept(event()))
         assertEquals(1, received.size)
     }

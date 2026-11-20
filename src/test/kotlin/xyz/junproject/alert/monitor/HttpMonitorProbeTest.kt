@@ -71,6 +71,25 @@ class HttpMonitorProbeTest {
     }
 
     @Test
+    fun `헤더만 보내고 본문을 끄는 대상도 시간 제한 안에 실패로 끝난다`() {
+        val created = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        created.createContext("/") { exchange ->
+            exchange.sendResponseHeaders(200, 0)                 // 길이를 정하지 않고 헤더부터 보낸다
+            exchange.responseBody.write("{".toByteArray()); exchange.responseBody.flush()
+            release.await()
+            exchange.close()
+        }
+        created.executor = Executors.newCachedThreadPool()
+        created.start()
+        server = created
+        val started = System.nanoTime()
+        val result = check("http://127.0.0.1:${created.address.port}/")
+        assertFalse(result.healthy)
+        assertTrue(Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(2), "본문을 기다렸다")
+        assertTrue(result.reason.contains("응답이 끝나지 않았다"), result.reason)
+    }
+
+    @Test
     fun `연결이 안 되면 예외 없이 실패로 돌려준다`() {
         val closedPort = ServerSocket(0).use { it.localPort }
         assertFalse(check("http://127.0.0.1:$closedPort/").healthy)

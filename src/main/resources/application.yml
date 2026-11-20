@@ -25,3 +25,5 @@ alert:
   mail-to: ${MAIL_TO:}
   data-path: ${ALERT_DATA_PATH:data/alert.db}
   monitors-file: ${ALERT_MONITORS_FILE:classpath:monitors.yml}
+  slot: ${ALERT_SLOT:}                          # 무중단 배포의 자리 이름(blue·green) — compose 가 준다. 비면 항상 활성
+  slot-probe-url: ${ALERT_SLOT_PROBE_URL:}      # 어느 자리가 요청을 받는지 물어볼 프록시 주소(X-Deploy-Slot 헤더)

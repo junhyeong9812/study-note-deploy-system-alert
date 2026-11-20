@@ -8,8 +8,6 @@ data class MonitorDefinition(
     val url: String,
     /** status: 200이면 정상 / components: 200이고 본문의 components 가 전부 UP 이어야 정상 */
     val expect: Expectation = Expectation.STATUS,
-    /** 같은 서버에 있는 대상끼리 묶는 이름 — 알림 문구에 쓴다 */
-    val host: String = "",
 ) {
     enum class Expectation { STATUS, COMPONENTS }
 }
@@ -41,7 +39,7 @@ object MonitorsFile {
                 "components" -> MonitorDefinition.Expectation.COMPONENTS
                 else -> throw IllegalArgumentException("monitors.yml: $name 의 expect '$value' 를 모른다(status·components)")
             }
-            MonitorDefinition(name, url, expect, host = fields["host"] as? String ?: "")
+            MonitorDefinition(name, url, expect)
         }
         require(definitions.isNotEmpty()) { "monitors.yml: 감시 대상이 하나도 없다" }
         val duplicated = definitions.groupBy { it.name }.filterValues { it.size > 1 }.keys

@@ -12,10 +12,10 @@ class MonitorsFileTest {
     fun `환경변수로 주소를 채우고 기대값을 읽는다`() {
         val definitions = parse("""
             monitors:
-              - { name: llm, host: llm, url: "${'$'}{MONITOR_LLM_URL}/health" }
+              - { name: llm, url: "${'$'}{MONITOR_LLM_URL}/health" }
               - { name: backend-deps, url: "http://b/api/health/dependencies", expect: components }
         """.trimIndent())
-        assertEquals(MonitorDefinition("llm", "http://llm.internal:8000/health", MonitorDefinition.Expectation.STATUS, "llm"), definitions[0])
+        assertEquals(MonitorDefinition("llm", "http://llm.internal:8000/health", MonitorDefinition.Expectation.STATUS), definitions[0])
         assertEquals(MonitorDefinition.Expectation.COMPONENTS, definitions[1].expect)
     }
 

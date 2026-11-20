@@ -29,16 +29,22 @@ class AlertSchedule(
 
     @Scheduled(cron = "\${alert.summary-cron:0 0 9 * * *}", zone = "Asia/Seoul")
     fun sendDailySummary() {
-        if (round.draining) return
+        if (!round.active) return   // 대기 자리는 보내지 않는다 — 활성 자리 하나만
         val now = Instant.now()
-        val lastDay = runCatching { storeHolder.store?.since(now.minus(Duration.ofDays(1))) }.getOrNull() ?: emptyList()
-        val summary = DailySummary.compose(round.snapshot(), lastDay, notifier.undeliveredCount, now)
-        val result = notifier.notify(summary)
-        // 요약은 메일로도 보낸다(첫 채널이 메일이 아니었다면)
-        if (result.deliveredBy != "mail") channels.filterIsInstance<MailChannel>().firstOrNull()?.let { mail ->
-            runCatching { mail.send(summary) }.onFailure { log.warn("alert:alert:summary mail failed: {}", it.message) }
+        val store = storeHolder.store
+        val from = now.minus(Duration.ofDays(1))
+        // 기록을 못 읽으면 null — 요약이 0건으로 꾸미지 않고 "읽지 못했다"고 적는다
+        val changes = runCatching { store?.changesSince(from) }.getOrNull()
+        val lastDay = runCatching { store?.since(from) }.getOrNull()
+        val summary = DailySummary.compose(round.snapshot(), changes, lastDay, notifier.undeliveredCount, now)
+        val id = runCatching { store?.record(Incident(now, "summary", "daily", summary.title, summary.body, null)) }.getOrNull()
+        notifier.submit(summary) { channel ->
+            if (id != null) runCatching { store?.markDelivered(id, channel) }
+            // 요약은 메일로도 보낸다(나간 채널이 메일이 아니었다면)
+            if (channel != "mail") channels.filterIsInstance<MailChannel>().firstOrNull()?.let { mail ->
+                runCatching { mail.send(summary) }.onFailure { log.warn("alert:alert:summary mail failed: {}", it.javaClass.simpleName) }
+            }
         }
-        runCatching { storeHolder.store?.record(Incident(now, "summary", "daily", summary.title, summary.body, result.deliveredBy)) }
     }
 
     @Scheduled(cron = "0 30 3 * * *", zone = "Asia/Seoul")

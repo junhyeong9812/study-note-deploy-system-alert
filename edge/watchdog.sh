@@ -24,26 +24,41 @@ readable() {   # 초 → "N분 M초"
   if [ "$1" -lt 60 ]; then echo "${1}초"; else echo "$(($1 / 60))분 $(($1 % 60))초"; fi
 }
 
-send_discord() {   # 실패해도 스크립트는 계속된다
+# 보냈으면 0, 못 보냈으면 1 — 웹훅이 4xx·5xx 로 답한 것도 실패다(다음 실행에 다시 보낸다)
+send_discord() {
   if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then log "discord 미설정 — 보내지 않음: $1"; return 0; fi
-  local payload
+  local payload code
   payload="$(printf '{"content": "%s"}' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')")"
-  curl -sS -m 10 -o /dev/null -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK_URL" 2>>"$STATE_DIR/watchdog.log" \
-    || log "discord 발송 실패: $1"
+  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "$payload" "$DISCORD_WEBHOOK_URL" 2>/dev/null)"
+  case "$code" in
+    2??) return 0 ;;
+    *) log "discord 발송 실패(응답 ${code:-없음}): $1"; return 1 ;;
+  esac
 }
 
-send_event() {   # 집이 다시 보일 때만 부른다 — 끊김 기록을 알림 서버에도 남긴다
+send_event() {   # 집이 다시 보일 때만 부른다 — 끊김 기록을 알림 서버에도 남긴다(실패해도 outages.log 에는 남아 있다)
   [ -n "${ALERT_SECRET:-}" ] || return 0
-  curl -sS -m 10 -o /dev/null -H 'Content-Type: application/json' -H "X-Alert-Secret: $ALERT_SECRET" \
+  local code
+  code="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -H "X-Alert-Secret: $ALERT_SECRET" \
     -d "$(printf '{"source":"edge","kind":"%s","severity":"info","key":"%s","title":"%s","detail":"%s"}' "$1" "$2" "$3" "$4")" \
-    "$HOME_TARGET/api/ops/alert-events" 2>>"$STATE_DIR/watchdog.log" || log "사건 전달 실패: $3"
+    "$HOME_TARGET/api/ops/alert-events" 2>/dev/null)"
+  case "$code" in 2??) ;; *) log "사건 전달 실패(응답 ${code:-없음}): $3" ;; esac
 }
 
 probe() { [ "$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null)" = "200" ]; }
 
-# check <이름> <사람이 읽을 이름> <성공 여부(0|1)>
+# 알림 서버가 감시를 하고 있는가 — 200 이어도 "standby"(대기 자리)면 아무도 감시하지 않는 것이다.
+# 배포 전환 직후 30초쯤은 standby 가 보일 수 있지만 3번 연속 기준에 걸리지 않는다.
+alert_watching() {
+  local body
+  body="$(curl -s -m 10 -w '\n%{http_code}' "$HOME_TARGET/api/ops/alert-health" 2>/dev/null)"
+  [ "$(printf '%s' "$body" | tail -n 1)" = "200" ] && ! printf '%s' "$body" | grep -q '"status":"standby"'
+}
+
+# check <이름> <사람이 읽을 이름> <성공 여부(0|1)> <알림 보류(0|1)>
+# 보류: 실패 횟수는 세되 "안 보임" 알림은 미룬다(같은 원인의 알림이 겹치지 않게). 보류가 풀려도 계속 실패면 그때 보낸다.
 check() {
-  local name="$1" label="$2" healthy="$3" state="$STATE_DIR/$1.state" failures=0 down_since=0 alerted=0
+  local name="$1" label="$2" healthy="$3" hold="$4" state="$STATE_DIR/$1.state" failures=0 down_since=0 alerted=0
   # shellcheck disable=SC1090
   [ -r "$state" ] && . "$state"
   if [ "$healthy" = "1" ]; then
@@ -60,20 +75,19 @@ check() {
   fi
   failures=$((failures + 1))
   [ "$failures" -eq 1 ] && down_since="$now"
-  if [ "$failures" -ge "$ALERT_AFTER" ] && [ "$alerted" = "0" ]; then
-    send_discord "[집 밖 감시] 밖에서 안 보임: ${label} ($(readable $((now - down_since + 60)))째)"
-    alerted=1
+  if [ "$failures" -ge "$ALERT_AFTER" ] && [ "$alerted" = "0" ] && [ "$hold" = "0" ]; then
+    # 보낸 것이 확인됐을 때만 "알렸다"고 적는다 — 못 보냈으면 다음 실행에 다시 보낸다
+    if send_discord "[집 밖 감시] 밖에서 안 보임: ${label} ($(readable $((now - down_since + 60)))째)"; then alerted=1; fi
   fi
   printf 'failures=%s\ndown_since=%s\nalerted=%s\n' "$failures" "$down_since" "$alerted" > "$state"
 }
 
-if probe "$HOME_TARGET/"; then
-  check site "사이트" 1
-  # 사이트가 보일 때만 알림 서버를 따로 본다 — 사이트가 안 보이면 알림 서버 확인도 같이 실패하므로 알림을 겹치지 않는다
-  if probe "$HOME_TARGET/api/ops/alert-health"; then check alert "알림 서버" 1; else check alert "알림 서버" 0; fi
-else
-  check site "사이트" 0
-fi
+# 두 경로를 매번 따로 확인한다. 사이트가 안 보이는 동안에는 알림 서버 쪽 "안 보임" 알림만 미룬다 —
+# 집 전체가 끊기면 둘 다 실패하므로 알림은 사이트 것 하나면 된다. 사이트가 돌아왔는데도 알림 서버가 안 보이면 그때 알린다.
+if probe "$HOME_TARGET/"; then site_ok=1; else site_ok=0; fi
+if alert_watching; then alert_ok=1; else alert_ok=0; fi
+check site "사이트" "$site_ok" 0
+check alert "알림 서버" "$alert_ok" "$((1 - site_ok))"
 
 # 로그가 끝없이 자라지 않게 — 최근 5000줄만 남긴다
 for file in watchdog.log outages.log; do

@@ -1,14 +1,17 @@
 # 알림 서버 — 두 자리(blue·green) 중 하나만 뜨고 nginx 가 그쪽으로 보낸다(무중단 배포, ci-cd agent 가 전환).
 # 처음 올릴 때와 수동 조작은 ci-cd 저장소 README 의 "무중단 배포" 절을 따른다.
+x-alert-environment: &alert-environment
+  ALERT_DATA_PATH: /data/alert.db
+  SERVER_NAME: alert
+  # 감시·발송은 프록시가 실제로 보내는 자리 하나만 한다 — 각 자리가 매 바퀴 이 주소의 X-Deploy-Slot 을 본다
+  ALERT_SLOT_PROBE_URL: http://nginx:16000/health
+
 x-alert: &alert
   build: .
   image: alert-app:${IMAGE_TAG:-local}   # ci-cd: CI 가 커밋 태그로 빌드, CD 가 그 태그로 교체
   env_file: .env                          # 채널 주소·비밀값·감시 대상 주소 — 서버에만 있다(.env.example 참고)
-  environment:
-    ALERT_DATA_PATH: /data/alert.db
-    SERVER_NAME: alert
   volumes:
-    - ./data:/data                        # 기록(SQLite) — 두 자리가 같은 파일을 본다(정리 중인 자리는 쓰지 않는다)
+    - ./data:/data                        # 기록(SQLite) — 두 자리가 같은 파일을 본다
   healthcheck:
     # localhost 금지 — 컨테이너 안에서 ::1로 풀려 IPv4 바인딩 서버가 unhealthy로 찍힘
     test: ["CMD-SHELL", "curl -fsS -m 5 http://127.0.0.1:16000/health || exit 1"]
@@ -23,12 +26,18 @@ services:
     <<: *alert
     profiles: ["blue"]           # 이름을 지정해야만 뜬다 — `docker compose up -d` 가 두 자리를 한꺼번에 띄우지 않게
     container_name: alert-app-blue
+    environment:
+      <<: *alert-environment
+      ALERT_SLOT: blue
     ports:
       - "127.0.0.1:16001:16000"    # agent 의 자리별 헬스 확인·정리 알림용
   alert-green:
     <<: *alert
     profiles: ["green"]
     container_name: alert-app-green
+    environment:
+      <<: *alert-environment
+      ALERT_SLOT: green
     ports:
       - "127.0.0.1:16002:16000"
 
