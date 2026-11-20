@@ -64,6 +64,26 @@ class WebhookChannelsTest {
     }
 
     @Test
+    fun `헤더만 보내고 본문을 끄는 수신 서버도 시간 제한 안에 실패로 끝난다`() {
+        val created = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        created.createContext("/") { exchange ->
+            exchange.requestBody.readBytes()
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.write("o".toByteArray()); exchange.responseBody.flush()
+            release.await()
+            exchange.close()
+        }
+        created.executor = Executors.newCachedThreadPool()
+        created.start()
+        server = created
+        val channel = SlackChannel("http://127.0.0.1:${created.address.port}$secretPath", mapper, Duration.ofMillis(300))
+        val started = System.nanoTime()
+        val message = failure { channel.send(alarm) }
+        assertTrue(Duration.ofNanos(System.nanoTime() - started) < Duration.ofSeconds(2), "본문을 기다렸다")
+        assertFalse(message.contains("s3cr3t"), message)
+    }
+
+    @Test
     fun `연결이 안 되면 실패하고 오류 문구에 주소가 없다`() {
         val closedPort = ServerSocket(0).use { it.localPort }
         val message = failure { DiscordChannel("http://127.0.0.1:$closedPort$secretPath", mapper).send(alarm) }

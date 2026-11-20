@@ -3,7 +3,10 @@ package xyz.junproject.alert.notify
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -18,7 +21,7 @@ class FallbackNotifier(
     private val attemptsPerChannel: Int = 3,          // 처음 1회 + 재시도 2회
     private val undeliveredLimit: Int = 200,           // 보관 상한 — 넘으면 오래된 것부터 버리고 그 사실을 남긴다
     private val pause: (Long) -> Unit = { Thread.sleep(it) },
-    private val worker: Executor = Executors.newSingleThreadExecutor { task -> Thread(task, "alert-sender").apply { isDaemon = true } },
+    private val worker: Executor = boundedWorker(),
 ) {
     private class Pending(val notification: Notification, val onDelivered: (String) -> Unit)
 
@@ -30,10 +33,26 @@ class FallbackNotifier(
 
     /** 발송을 맡기고 바로 돌아온다. 나가면 [onDelivered]에 나간 채널 이름을 알려 준다(나중에 재시도로 나간 경우도). */
     fun submit(notification: Notification, onDelivered: (String) -> Unit = {}) {
-        worker.execute {
-            runCatching { notify(notification, onDelivered) }
-                .onFailure { log.error("alert:alert:send failed unexpectedly for '{}': {}", notification.title, it.javaClass.simpleName) }
+        try {
+            worker.execute {
+                runCatching { notify(notification, onDelivered) }
+                    .onFailure { log.error("alert:alert:send failed unexpectedly for '{}': {}", notification.title, it.javaClass.simpleName) }
+            }
+        } catch (_: RejectedExecutionException) {
+            // 발송이 밀려 대기열이 찼다 — 버리지 않고 보관함으로(보관함도 상한이 있고, 넘치면 그 사실을 남긴다)
+            log.error("alert:alert:send queue full — kept for retry: {}", notification.title)
+            keep(Pending(notification, onDelivered))
         }
+    }
+
+    /**
+     * 보관 중인 미발송 알림을 내려놓는다(이 자리가 대기로 내려갈 때). 기록에는 미발송으로 남아 있으므로
+     * 감시를 이어받은 자리가 기록에서 되살려 보낸다 — 두 자리가 같은 알림을 각자 다시 보내지 않게. 내려놓은 건수를 돌려준다.
+     */
+    fun abandonUndelivered(): Int {
+        var abandoned = 0
+        while (undelivered.poll() != null) abandoned++
+        return abandoned
     }
 
     /** 그 자리에서 보낸다(발송 스레드가 부른다). 모든 채널이 실패하면 보관한다. */
@@ -96,5 +115,15 @@ class FallbackNotifier(
             }
         }
         return DeliveryResult(null, failures)
+    }
+
+    companion object {
+        const val SEND_QUEUE_LIMIT = 500
+
+        /** 발송 스레드 하나 + 상한이 있는 대기열 — 유입이 발송보다 빨라도 메모리가 끝없이 늘지 않는다. */
+        fun boundedWorker(queueLimit: Int = SEND_QUEUE_LIMIT): Executor = ThreadPoolExecutor(
+            1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue(queueLimit),
+            { task -> Thread(task, "alert-sender").apply { isDaemon = true } }, ThreadPoolExecutor.AbortPolicy(),
+        )
     }
 }

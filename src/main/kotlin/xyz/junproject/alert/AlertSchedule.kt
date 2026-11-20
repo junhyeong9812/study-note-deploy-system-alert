@@ -36,8 +36,8 @@ class AlertSchedule(
         // 기록을 못 읽으면 null — 요약이 0건으로 꾸미지 않고 "읽지 못했다"고 적는다
         val changes = runCatching { store?.changesSince(from) }.getOrNull()
         val lastDay = runCatching { store?.since(from) }.getOrNull()
-        val summary = DailySummary.compose(round.snapshot(), changes, lastDay, notifier.undeliveredCount, now)
-        val id = runCatching { store?.record(Incident(now, "summary", "daily", summary.title, summary.body, null)) }.getOrNull()
+        val summary = DailySummary.compose(round.snapshot(), changes, lastDay, notifier.undeliveredCount, now, from)
+        val id = runCatching { store?.record(Incident(now, "summary", "daily", summary.title, summary.body, null, severity = summary.severity.name)) }.getOrNull()
         notifier.submit(summary) { channel ->
             if (id != null) runCatching { store?.markDelivered(id, channel) }
             // 요약은 메일로도 보낸다(나간 채널이 메일이 아니었다면)

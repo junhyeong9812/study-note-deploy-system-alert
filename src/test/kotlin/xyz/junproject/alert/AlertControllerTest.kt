@@ -23,7 +23,7 @@ import java.util.concurrent.CopyOnWriteArrayList
     "alert.secret=test-secret",
     "alert.discord-webhook-url=http://127.0.0.1:1/unused",   // 채널이 하나도 없으면 뜨지 않는다 — 실제 발송은 아래 가짜로 바꾼다
     "alert.monitors-file=classpath:monitors-test.yml",
-    "alert.data-path=build/tmp/alert-controller-test.db",
+    "alert.data-path=build/tmp/alert-controller-test-v2.db",
     "alert.round-initial-delay-ms=3600000",     // 테스트 중에는 감시 루프가 돌지 않게
 ])
 @AutoConfigureMockMvc

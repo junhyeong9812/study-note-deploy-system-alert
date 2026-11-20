@@ -45,7 +45,7 @@ class EventIntake(
             repeated
         }
         val notification = Notification("[${event.source}] ${event.title}", event.detail, event.severity)
-        val id = runCatching { store?.record(Incident(now, "event", event.key, notification.title, event.detail, null, suppressed)) }
+        val id = runCatching { store?.record(Incident(now, "event", event.key, notification.title, event.detail, null, suppressed, event.severity.name)) }
             .onFailure { log.warn("alert:alert:event not recorded ({}): {}", event.key, it.message) }.getOrNull()
         if (!suppressed) notifier.submit(notification) { channel ->
             if (id != null) runCatching { store?.markDelivered(id, channel) }

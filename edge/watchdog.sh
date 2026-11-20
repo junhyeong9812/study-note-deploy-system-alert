@@ -66,7 +66,9 @@ check() {
       local seconds=$((now - down_since))
       echo "$(stamp "$down_since") $(stamp "$now") ${seconds}s $name" >> "$STATE_DIR/outages.log"   # 짧은 끊김도 전부 남긴다
       if [ "$alerted" = "1" ]; then
-        send_discord "[집 밖 감시] 복구: ${label} — 끊긴 시간 $(readable "$seconds")"
+        # 복구 알림을 못 보냈으면 적어 두고 다음 실행에 다시 보낸다(상태는 정상으로 되돌린다)
+        local recovered="[집 밖 감시] 복구: ${label} — 끊긴 시간 $(readable "$seconds")"
+        send_discord "$recovered" || printf '%s\n' "$recovered" > "$STATE_DIR/$name.pending"
         send_event "outage_recovered" "edge-outage:$name" "밖에서 본 ${label} 복구" "끊긴 시간 $(readable "$seconds") ($(stamp "$down_since") ~ $(stamp "$now"))"
       fi
     fi
@@ -81,6 +83,12 @@ check() {
   fi
   printf 'failures=%s\ndown_since=%s\nalerted=%s\n' "$failures" "$down_since" "$alerted" > "$state"
 }
+
+# 지난 실행에 못 보낸 복구 알림부터 다시 보낸다
+for pending in "$STATE_DIR"/*.pending; do
+  [ -f "$pending" ] || continue
+  send_discord "$(cat "$pending")" && rm -f "$pending"
+done
 
 # 두 경로를 매번 따로 확인한다. 사이트가 안 보이는 동안에는 알림 서버 쪽 "안 보임" 알림만 미룬다 —
 # 집 전체가 끊기면 둘 다 실패하므로 알림은 사이트 것 하나면 된다. 사이트가 돌아왔는데도 알림 서버가 안 보이면 그때 알린다.

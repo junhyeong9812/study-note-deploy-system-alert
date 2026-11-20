@@ -204,12 +204,68 @@ class MonitorRoundTest {
         round(definitions("llm"), store = store, notifier = FallbackNotifier(listOf(dead), pause = {}, worker = { it.run() })).runTimes(3)
         assertNull(store.recent(1).single().deliveredBy)
 
-        val restarted = round(definitions("llm"), store = store)                    // 재시작 — 채널이 돌아왔다
+        val restarted = round(definitions("llm"), store = store)                    // 재시작 — 채널이 돌아왔다(기록 30초 뒤)
         restarted.runTimes(1)
+        assertTrue(inbox.received.isEmpty(), "앞 자리가 아직 보내는 중일 수 있는 알림을 곧바로 되살렸다")
+        restarted.runTimes(1)                                                       // 기록 60초 뒤
         assertEquals(listOf("응답 없음: llm"), inbox.received.map { it.title })
+        assertEquals(Notification.Severity.CRITICAL, inbox.received.single().severity, "원래 심각도로 되살려야 한다")
         assertEquals("discord", store.recent(1).single().deliveredBy)
-        restarted.runTimes(2)
+        restarted.runTimes(3)
         assertEquals(1, inbox.received.size, "되살린 알림을 또 보냈다")
+    }
+
+    @Test
+    fun `대기로 내려간 자리는 못 보낸 알림을 내려놓고 이어받은 자리가 한 번만 보낸다`(@TempDir directory: Path) {
+        val store = store(directory)
+        var discordUp = false
+        val blueSent = CopyOnWriteArrayList<String>()
+        val flaky = object : NotificationChannel {
+            override val name = "discord"
+            override fun send(notification: Notification) { if (!discordUp) throw IllegalStateException("discord down"); blueSent += notification.title }
+        }
+        val blueNotifier = FallbackNotifier(listOf(flaky), pause = {}, worker = { it.run() })
+        val blue = round(definitions("llm"), store = store, slot = "blue", notifier = blueNotifier)
+        val green = round(definitions("llm"), store = store, slot = "green")
+        unhealthy += "llm"
+        repeat(3) { blue.run(); green.run(); now = now.plusSeconds(30) }           // blue 가 DOWN 을 알리려다 실패 → 보관
+        assertEquals(1, blueNotifier.undeliveredCount)
+
+        servingSlot = "green"; discordUp = true                                     // 전환, 채널 복구
+        repeat(4) { blue.run(); green.run(); now = now.plusSeconds(30) }
+        assertEquals(0, blueNotifier.undeliveredCount)
+        assertTrue(blueSent.isEmpty(), "대기 자리가 보관하던 알림을 보냈다")
+        assertEquals(listOf("응답 없음: llm"), inbox.received.map { it.title }, "이어받은 자리가 한 번만 보내야 한다")
+    }
+
+    @Test
+    fun `기록을 읽지 못하면 되살리기를 끝났다고 치지 않고 다음 바퀴에 다시 읽는다`(@TempDir directory: Path) {
+        val dead = object : NotificationChannel {
+            override val name = "discord"
+            override fun send(notification: Notification) = throw IllegalStateException("discord down")
+        }
+        val first = store(directory)
+        unhealthy += "llm"
+        round(definitions("llm"), store = first, notifier = FallbackNotifier(listOf(dead), pause = {}, worker = { it.run() })).runTimes(3)
+        now = now.plusSeconds(120)
+
+        // 재시작한 자리의 기록 저장소가 첫 바퀴 동안 읽히지 않는다
+        var storeBroken = true
+        val connection = SingleConnectionDataSource("jdbc:sqlite:${directory.resolve("alert.db")}", true)
+        val flakySource = object : org.springframework.jdbc.datasource.AbstractDataSource() {
+            override fun getConnection(): java.sql.Connection =
+                if (storeBroken) throw java.sql.SQLException("database is locked") else connection.connection
+            override fun getConnection(username: String?, password: String?) = getConnection()
+        }
+        storeBroken = false
+        val restartedStore = IncidentStore(JdbcTemplate(flakySource))
+        storeBroken = true
+        val restarted = round(definitions("llm"), store = restartedStore)
+        restarted.runTimes(1)
+        assertTrue(inbox.received.isEmpty())
+        storeBroken = false
+        restarted.runTimes(1)
+        assertEquals(listOf("응답 없음: llm"), inbox.received.map { it.title }, "기록이 다시 읽힌 뒤에도 되살리지 않았다")
     }
 
     @Test

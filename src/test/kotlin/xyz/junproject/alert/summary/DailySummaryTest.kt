@@ -47,6 +47,18 @@ class DailySummaryTest {
     }
 
     @Test
+    fun `24시간 전에 시작한 장애는 지난 24시간 안의 몫만 합계에 넣는다`() {
+        val longDown = mapOf("llm" to MonitorState(MonitorStatus.DOWN, 99, downSince = now.minusSeconds(3 * 86_400L), lastReason = "status 503"))
+        val stillDown = DailySummary.compose(longDown, emptyList(), emptyList(), 0, now)
+        assertTrue(stillDown.body.contains("- llm: 장애 72시간 0분째 — status 503 · 24시간 DOWN 0회, 합계 24시간 0분"), stillDown.body)
+
+        // 이틀 전에 시작해 1시간 전에 복구된 장애(길이 47시간) — 창 안의 몫은 23시간
+        val recovered = DailySummary.compose(mapOf("llm" to MonitorState(MonitorStatus.UP)),
+            listOf(MonitorChange(now.minusSeconds(3600), "llm", MonitorStatus.UP, 47 * 3600L)), emptyList(), 0, now)
+        assertTrue(recovered.body.contains("- llm: 정상 · 24시간 DOWN 0회, 합계 23시간 0분"), recovered.body)
+    }
+
+    @Test
     fun `모두 정상이고 일이 없던 날`() {
         val summary = DailySummary.compose(mapOf("front" to MonitorState(MonitorStatus.UP)), emptyList(), emptyList(), 0, now)
         assertEquals("하루 요약 — 모두 정상", summary.title)

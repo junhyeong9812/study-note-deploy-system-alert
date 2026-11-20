@@ -16,6 +16,7 @@ data class Incident(
     val detail: String,
     val deliveredBy: String?,  // 나간 채널, 못 나갔으면 null
     val suppressed: Boolean = false,
+    val severity: String = "WARNING",   // INFO · WARNING · CRITICAL — 못 보낸 알림을 되살릴 때 원래대로 보낸다
 )
 
 /** 대상 하나의 상태 변화 — 알림을 묶어 보냈더라도 대상마다 한 줄씩 남긴다(하루 요약의 대상별 횟수·시간에 쓴다). */
@@ -41,7 +42,8 @@ class IncidentStore(private val jdbc: JdbcTemplate) {
         jdbc.execute(
             """CREATE TABLE IF NOT EXISTS incident (
                  id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL,
-                 title TEXT NOT NULL, detail TEXT NOT NULL, delivered_by TEXT, suppressed INTEGER NOT NULL DEFAULT 0)"""
+                 title TEXT NOT NULL, detail TEXT NOT NULL, delivered_by TEXT, suppressed INTEGER NOT NULL DEFAULT 0,
+                 severity TEXT NOT NULL DEFAULT 'WARNING')"""
         )
         jdbc.execute("CREATE INDEX IF NOT EXISTS incident_at ON incident(at)")
         jdbc.execute(
@@ -61,9 +63,9 @@ class IncidentStore(private val jdbc: JdbcTemplate) {
     @Synchronized
     fun record(incident: Incident): Long {
         jdbc.update(
-            "INSERT INTO incident (at, kind, key, title, detail, delivered_by, suppressed) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO incident (at, kind, key, title, detail, delivered_by, suppressed, severity) VALUES (?,?,?,?,?,?,?,?)",
             stamp(incident.at), incident.kind, incident.key, incident.title, incident.detail.take(4000),
-            incident.deliveredBy, if (incident.suppressed) 1 else 0,
+            incident.deliveredBy, if (incident.suppressed) 1 else 0, incident.severity,
         )
         return jdbc.queryForObject("SELECT last_insert_rowid()", Long::class.java)!!
     }
@@ -75,25 +77,25 @@ class IncidentStore(private val jdbc: JdbcTemplate) {
 
     private fun incidentOf(row: java.sql.ResultSet) = Incident(
         Instant.parse(row.getString("at")), row.getString("kind"), row.getString("key"), row.getString("title"),
-        row.getString("detail"), row.getString("delivered_by"), row.getInt("suppressed") == 1,
+        row.getString("detail"), row.getString("delivered_by"), row.getInt("suppressed") == 1, row.getString("severity"),
     )
 
     @Synchronized
     fun recent(limit: Int): List<Incident> = jdbc.query(
-        "SELECT at, kind, key, title, detail, delivered_by, suppressed FROM incident ORDER BY id DESC LIMIT ?",
+        "SELECT at, kind, key, title, detail, delivered_by, suppressed, severity FROM incident ORDER BY id DESC LIMIT ?",
         { row, _ -> incidentOf(row) }, limit,
     )
 
     @Synchronized
     fun since(from: Instant): List<Incident> = jdbc.query(
-        "SELECT at, kind, key, title, detail, delivered_by, suppressed FROM incident WHERE at >= ? ORDER BY id",
+        "SELECT at, kind, key, title, detail, delivered_by, suppressed, severity FROM incident WHERE at >= ? ORDER BY id",
         { row, _ -> incidentOf(row) }, stamp(from),
     )
 
     /** 아직 어느 채널로도 나가지 못한 알림(요약 제외) — 오래된 것부터, 최근 [limit]건까지. */
     @Synchronized
     fun undeliveredSince(from: Instant, limit: Int): List<Pair<Long, Incident>> = jdbc.query(
-        """SELECT id, at, kind, key, title, detail, delivered_by, suppressed FROM incident
+        """SELECT id, at, kind, key, title, detail, delivered_by, suppressed, severity FROM incident
            WHERE at >= ? AND delivered_by IS NULL AND suppressed = 0 AND kind <> 'summary' ORDER BY id DESC LIMIT ?""",
         { row, _ -> row.getLong("id") to incidentOf(row) }, stamp(from), limit,
     ).reversed()

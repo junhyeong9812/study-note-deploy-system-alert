@@ -30,7 +30,9 @@ class MonitorRound(
     private val log = LoggerFactory.getLogger("alert")
     private val states = ConcurrentHashMap<String, MonitorState>()
     private var holding = false            // 지금 감시를 맡고 있는가(대기 → 활성으로 바뀐 바퀴에 이어받기를 한다)
-    private var restoredUndelivered = false
+    private var tookOverAt: Instant? = null          // 이 시각까지의 미발송 기록은 앞 자리(또는 재시작 전)의 것 — 되살릴 대상
+    private var restoreFinished = true
+    private val restoredIds = HashSet<Long>()
     @Volatile var lastRoundAt: Instant? = null
         private set
 
@@ -43,12 +45,17 @@ class MonitorRound(
 
     fun run() {
         if (!activeSlot.refresh()) {
-            if (holding) log.info("alert:alert:standing by — another slot is serving")
+            if (holding) {
+                // 못 보낸 알림은 기록에 남아 있다 — 이어받은 자리가 되살려 보내므로 여기서는 내려놓는다(두 번 보내지 않게)
+                val abandoned = notifier.abandonUndelivered()
+                log.info("alert:alert:standing by — another slot is serving ({} undelivered left to it)", abandoned)
+            }
             holding = false
             return
         }
         val now = clock()
         if (!holding) takeOver(now)
+        restoreUndelivered(now)
         val results = probeAll()
         if (!activeSlot.active) return   // 확인하는 사이 정리 알림을 받았다 — 이 결과로는 알리지 않는다
         val transitions = mutableListOf<MonitorTransition>()
@@ -69,7 +76,6 @@ class MonitorRound(
     /**
      * 감시를 이어받는다(기동 직후, 또는 배포로 이 자리가 활성이 된 때).
      * 직전까지 DOWN 이던 대상은 기록에서 이어 받고 — 같은 장애를 또 알리지 않는다 — 나머지는 모름에서 다시 센다.
-     * 앞 자리가 끝내 못 보낸 알림은 한 번만 보관함에 다시 올린다.
      */
     private fun takeOver(now: Instant) {
         holding = true
@@ -78,14 +84,30 @@ class MonitorRound(
             .onFailure { log.warn("alert:alert:previous states not loaded: {}", it.message) }
             .getOrNull()?.forEach { (name, state) -> if (definitions.any { it.name == name }) states[name] = state }
         log.info("alert:alert:taking over monitoring — {} monitors, {} already down", definitions.size, states.size)
+        tookOverAt = now
+        restoreFinished = store == null
+        restoredIds.clear()
+    }
+
+    /**
+     * 앞 자리(또는 재시작 전의 이 자리)가 끝내 못 보낸 알림을 기록에서 되살려 보관함에 올린다.
+     * 기록된 지 [HANDOVER_SETTLE] 이 안 된 것은 앞 자리가 아직 보내는 중일 수 있어 그 뒤의 바퀴로 미룬다.
+     * 기록을 읽지 못하면 끝났다고 치지 않고 다음 바퀴에 다시 읽는다.
+     */
+    private fun restoreUndelivered(now: Instant) {
+        if (restoreFinished) return
         val history = store ?: return
-        if (restoredUndelivered) return
-        restoredUndelivered = true
-        runCatching { history.undeliveredSince(now.minus(Duration.ofDays(1)), 200) }
-            .onFailure { log.warn("alert:alert:undelivered notifications not restored: {}", it.message) }
-            .getOrNull()?.forEach { (id, incident) ->
-                notifier.restore(Notification(incident.title, incident.detail, severityOf(incident.kind))) { channel -> markDelivered(id, channel) }
-            }
+        val boundary = tookOverAt ?: return
+        val rows = runCatching { history.undeliveredSince(boundary.minus(Duration.ofDays(1)), 200) }
+            .onFailure { log.warn("alert:alert:undelivered notifications not restored yet: {}", it.message) }
+            .getOrNull() ?: return
+        val settled = now.minus(HANDOVER_SETTLE)
+        for ((id, incident) in rows) {
+            if (incident.at.isAfter(boundary) || incident.at.isAfter(settled) || !restoredIds.add(id)) continue
+            val severity = runCatching { Notification.Severity.valueOf(incident.severity) }.getOrDefault(Notification.Severity.WARNING)
+            notifier.restore(Notification(incident.title, incident.detail, severity)) { channel -> markDelivered(id, channel) }
+        }
+        if (!settled.isBefore(boundary)) restoreFinished = true   // 이어받은 시각까지의 기록을 모두 살폈다
     }
 
     private fun probeAll(): Map<String, ProbeResult> {
@@ -139,7 +161,7 @@ class MonitorRound(
 
     /** 먼저 기록하고(발송 전에는 채널이 비어 있다) 발송을 맡긴다. 나가면 그 행에 채널을 적는다. */
     private fun send(kind: String, key: String, notification: Notification, now: Instant) {
-        val id = runCatching { store?.record(Incident(now, kind, key, notification.title, notification.body, null)) }
+        val id = runCatching { store?.record(Incident(now, kind, key, notification.title, notification.body, null, severity = notification.severity.name)) }
             .onFailure { log.warn("alert:alert:incident not recorded ({}): {}", kind, it.message) }.getOrNull()
         notifier.submit(notification) { channel -> if (id != null) markDelivered(id, channel) }
     }
@@ -155,6 +177,9 @@ class MonitorRound(
         else -> Notification.Severity.WARNING
     }
 }
+
+/** 자리 교대 때, 앞 자리가 보내던 알림이 끝나기를 기다리는 시간(한 건의 발송은 길어야 50초쯤) */
+val HANDOVER_SETTLE: Duration = Duration.ofSeconds(60)
 
 fun readable(duration: Duration): String {
     val seconds = duration.seconds

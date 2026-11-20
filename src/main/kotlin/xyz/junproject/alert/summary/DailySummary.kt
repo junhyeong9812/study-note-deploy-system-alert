@@ -13,10 +13,10 @@ import java.time.Instant
 object DailySummary {
     /**
      * [changes]·[lastDay] 는 지난 24시간의 기록이다. 기록을 읽지 못했으면 null 을 넘긴다 — 0건으로 꾸미지 않고 못 읽었다고 적는다.
-     * 대상별 끊긴 시간 = 그 사이 복구된 장애의 길이 합 + (지금도 장애면) 시작부터 지금까지.
+     * 대상별 끊긴 시간 = 그 사이 복구된 장애의 길이 합 + (지금도 장애면) 시작부터 지금까지 — 모두 지난 24시간 안의 몫만.
      */
     fun compose(states: Map<String, MonitorState>, changes: List<MonitorChange>?, lastDay: List<Incident>?,
-                undelivered: Int, now: Instant): Notification {
+                undelivered: Int, now: Instant, from: Instant = now.minus(Duration.ofDays(1))): Notification {
         val down = states.filterValues { it.status == MonitorStatus.DOWN }
         val unknown = states.filterValues { it.status == MonitorStatus.UNKNOWN }
         val lines = mutableListOf<String>()
@@ -29,8 +29,10 @@ object DailySummary {
             }
             val mine = changes?.filter { it.monitor == name }.orEmpty()
             val downCount = mine.count { it.status == MonitorStatus.DOWN }
-            val downSeconds = mine.sumOf { it.downSeconds ?: 0 } +
-                (state.downSince?.takeIf { state.status == MonitorStatus.DOWN }?.let { Duration.between(it, now).seconds } ?: 0)
+            // 창([from]~[now]) 밖에서 시작한 장애는 창 안의 몫만 센다
+            val downSeconds = mine.sumOf { minOf(it.downSeconds ?: 0, Duration.between(from, it.at).seconds) } +
+                (state.downSince?.takeIf { state.status == MonitorStatus.DOWN }
+                    ?.let { Duration.between(maxOf(it, from), now).seconds } ?: 0)
             val history = if (changes != null && (downCount > 0 || downSeconds > 0)) " · 24시간 DOWN ${downCount}회, 합계 ${readable(Duration.ofSeconds(downSeconds))}" else ""
             lines += "- $name: $current$history"
         }

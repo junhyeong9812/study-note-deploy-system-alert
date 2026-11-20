@@ -109,6 +109,37 @@ class FallbackNotifierTest {
     }
 
     @Test
+    fun `발송이 밀려 대기열이 차면 버리지 않고 보관함으로 돌린다`() {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val received = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val blocked = object : NotificationChannel {
+            override val name = "discord"
+            override fun send(notification: Notification) { gate.await(); received += notification.title }
+        }
+        val notifier = FallbackNotifier(listOf(blocked), pause = {}, worker = FallbackNotifier.boundedWorker(queueLimit = 2))
+        repeat(6) { notifier.submit(Notification("alarm $it", "")) }      // 1건 발송 중 + 2건 대기 + 나머지는 넘침
+        assertTrue(notifier.undeliveredCount >= 3, "넘친 알림을 보관하지 않았다: ${notifier.undeliveredCount}")
+        gate.countDown()
+        val deadline = System.currentTimeMillis() + 5_000
+        while (received.size < 3 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(3, received.size)                                    // 발송 중이던 1건 + 대기하던 2건
+        notifier.retryNow()                                               // 넘쳐서 보관한 것
+        assertEquals((0..5).map { "alarm $it" }.toSet(), received.toSet(), "잃은 알림이 있다")
+    }
+
+    @Test
+    fun `대기로 내려갈 때 보관함을 내려놓는다`() {
+        val dead = RecordingChannel("discord", failuresLeft = -1)
+        val notifier = FallbackNotifier(listOf(dead), attemptsPerChannel = 1, pause = {})
+        repeat(3) { notifier.notify(Notification("alarm $it", "")) }
+        assertEquals(3, notifier.abandonUndelivered())
+        assertEquals(0, notifier.undeliveredCount)
+        dead.failuresLeft = 0
+        assertEquals(0, notifier.retryNow())
+        assertTrue(dead.received.isEmpty())
+    }
+
+    @Test
     fun `보관 상한을 넘으면 오래된 것부터 버린다`() {
         val dead = RecordingChannel("discord", failuresLeft = -1)
         val notifier = FallbackNotifier(listOf(dead), attemptsPerChannel = 1, undeliveredLimit = 2, pause = {})
