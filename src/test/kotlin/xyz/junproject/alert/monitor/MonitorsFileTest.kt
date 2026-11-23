@@ -42,8 +42,9 @@ class MonitorsFileTest {
         assertFalse(Regex("""\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}""").containsMatchIn(text), "monitors.yml 에 IP 가 있다")
         val names = Regex("""\$\{([A-Z0-9_]+)}""").findAll(text).map { it.groupValues[1] }.toSet()
         val definitions = MonitorsFile.parse(text) { name -> if (name in names) "http://example.invalid" else null }
-        assertEquals(9, definitions.size)
+        assertEquals(10, definitions.size)
         assertEquals(MonitorDefinition.Expectation.COMPONENTS, definitions.single { it.name == "backend-deps" }.expect)
         assertEquals(MonitorDefinition("observe", "http://example.invalid/health", MonitorDefinition.Expectation.STATUS), definitions.single { it.name == "observe" })
+        assertEquals(MonitorDefinition("admin", "http://example.invalid/api/health", MonitorDefinition.Expectation.STATUS), definitions.single { it.name == "admin" })
     }
 }
