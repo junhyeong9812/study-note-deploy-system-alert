@@ -11,3 +11,4 @@ monitors:
   - { name: deploy-agent-backend, url: "${MONITOR_DEPLOY_AGENT_BACKEND_URL}/health" }
   - { name: deploy-agent-llm,     url: "${MONITOR_DEPLOY_AGENT_LLM_URL}/health" }
   - { name: observe,         url: "${MONITOR_OBSERVE_URL}/health" }
+  - { name: admin,           url: "${MONITOR_ADMIN_URL}/api/health" }
