@@ -7,6 +7,7 @@ import xyz.junproject.alert.incident.IncidentStore
 import xyz.junproject.alert.notify.Notification
 import xyz.junproject.alert.notify.NotificationChannel
 import xyz.junproject.alert.notify.WebhookFailure
+import java.text.Normalizer
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -30,8 +31,7 @@ class TestSend(
     private var lastScopeHere = RateLimitScope.THIS_SLOT   // 그때 간격을 어디까지 걸었나 — 이 자리의 기억으로 거절할 때 그대로 밝힌다
 
     fun send(requestedBy: String): TestSendResult {
-        val now = clock()
-        val (waitFor, scope) = claim(now)
+        val (now, waitFor, scope) = claim()
         if (waitFor != null) return TestSendResult.TooSoon(waitFor, scope)
         val notification = notificationFor(requestedBy, now)
         val outcomes = channels.map { channel -> attempt(channel, notification) }
@@ -44,34 +44,41 @@ class TestSend(
      * 발송을 시작하기 전에 간격 자리를 차지한다. 차지했으면 기다릴 시간 null, 아니면 남은 시간.
      * 이 자리의 기억을 먼저 본다(DB 장애 중에 보낸 것은 DB 에 없다 — 그리고 DB 를 먼저 차지한 뒤 기억으로 거절하면
      * 거절된 요청의 시각이 DB 에 남아 창이 늘어난다). 그다음 두 자리가 함께 보는 DB 로 세고, DB 를 쓸 수 없으면 기억으로만 센다.
-     * 마지막 시각이 지금보다 미래면(시계가 뒤로 감) 낡은 값으로 보고 허용한다.
+     * 지금 시각은 이 잠금 안에서 읽는다 — 먼저 읽고 늦게 들어온 요청에게 앞선 발송이 미래로 보이지 않게.
+     * 마지막 시각이 지금 + 간격보다 더 미래일 때만(시계가 크게 뒤로 감) 낡은 값으로 보고 허용한다. 조금 미래인 것(몇 초 어긋난 두 자리의 시계)은 간격 안이다.
      * 단순화: DB 를 쓸 수 없는 동안은 두 자리가 각자 센다 — 배포로 두 자리가 함께 떠 있으면 간격 하나에 최대 두 번 나간다. DB 가 돌아오면 다시 함께 센다.
      */
     @Synchronized
-    private fun claim(now: Instant): Pair<Duration?, RateLimitScope> {
+    private fun claim(): Triple<Instant, Duration?, RateLimitScope> {
+        val now = clock()
         val lastSent = lastSentHere
-        if (lastSent != null && withinInterval(lastSent, now)) return remaining(lastSent, now) to lastScopeHere
+        if (lastSent != null && withinInterval(lastSent, now)) return Triple(now, remaining(lastSent, now), lastScopeHere)
         val history = store
         if (history != null) {
             val shared = runCatching { history.claimTestSend(now, interval) }
                 .onFailure { log.warn("alert:alert:test send limit not shared — database unavailable ({})", it.javaClass.simpleName) }
             if (shared.isSuccess) {
                 val sharedLastSent = shared.getOrNull() ?: return remember(now, RateLimitScope.ALL_SLOTS)
-                return remaining(sharedLastSent, now) to RateLimitScope.ALL_SLOTS
+                return Triple(now, remaining(sharedLastSent, now), RateLimitScope.ALL_SLOTS)
             }
         }
         return remember(now, RateLimitScope.THIS_SLOT)
     }
 
-    private fun remember(now: Instant, scope: RateLimitScope): Pair<Duration?, RateLimitScope> {
+    private fun remember(now: Instant, scope: RateLimitScope): Triple<Instant, Duration?, RateLimitScope> {
         lastSentHere = now
         lastScopeHere = scope
-        return null to scope
+        return Triple(now, null, scope)
     }
 
-    /** 간격 안인가 — 미래의 시각은 낡은 값이라 간격 안으로 치지 않는다 */
-    private fun withinInterval(lastSent: Instant, now: Instant) = !lastSent.isAfter(now) && now.isBefore(lastSent.plus(interval))
+    /**
+     * 간격 안인가 — 지금 + 간격보다 더 미래인 시각만 낡은 값으로 친다(같으면 아직 간격 안).
+     * [IncidentStore.claimTestSend] 의 조건과 같은 판정이다 — 한쪽을 바꾸면 다른 쪽도 바꾼다.
+     */
+    private fun withinInterval(lastSent: Instant, now: Instant) =
+        !lastSent.isAfter(now.plus(interval)) && now.isBefore(lastSent.plus(interval))
 
+    // 마지막 시각이 조금 미래면 실제로 남은 시간은 간격보다 길 수 있다 — 답에는 간격까지만 싣는다(그때 다시 물으면 남은 만큼 또 답한다)
     private fun remaining(lastSent: Instant, now: Instant): Duration =
         Duration.between(now, lastSent.plus(interval)).coerceIn(Duration.ofMillis(1), interval)
 
@@ -104,16 +111,23 @@ class TestSend(
         private val shownAt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Seoul"))
 
         /**
-         * 요청에서 온 이름에서 허용할 글자만 남긴다 — 글자 · 숫자 · 빈칸 · `.` · `_` · `-` 는 그대로, 나머지는 한 글자(코드 포인트)씩 `·`.
-         * 맨 URL · 꾸밈 문법(`*` · 백틱 · 괄호) · 멘션(`@` · `<…>`) · 줄바꿈 · 방향 제어 · 0폭 문자가 한꺼번에 사라진다.
-         * 막을 글자를 늘어놓지 않는다 — 늘어놓으면 빠지는 것이 생긴다.
+         * 요청에서 온 이름에서 허용할 글자만 남긴다. 먼저 조합형(NFC)으로 맞추고(분해형 `e`+U+0301 · 첫가끝 한글이 한 글자가 되게),
+         * 글자 · 숫자 · 빈칸 · `.` · `_` · `-` 는 그대로, 나머지는 한 글자(코드 포인트)씩 `·` 로 바꾼다 —
+         * 맨 URL · 꾸밈 문법(`*` · 백틱 · 괄호) · 멘션(`@` · `<…>`) · 줄바꿈 · 방향 제어 · 0폭 문자는 모두 `·` 가 된다.
+         * 보이지 않는 한글 채움 문자는 `isLetter` 가 글자로 보지만 글자로 치지 않는다. 막을 글자를 늘어놓지 않는다 — 늘어놓으면 빠지는 것이 생긴다.
          */
-        fun neutralized(name: String): String = buildString(name.length) {
-            name.codePoints().forEach { codePoint ->
-                if (Character.isLetter(codePoint) || Character.isDigit(codePoint) || codePoint in ALLOWED_MARKS) appendCodePoint(codePoint)
-                else append('·')
+        fun neutralized(name: String): String {
+            val composed = Normalizer.normalize(name, Normalizer.Form.NFC)
+            return buildString(composed.length) {
+                composed.codePoints().forEach { codePoint ->
+                    val kept = (Character.isLetter(codePoint) && codePoint !in HANGUL_FILLERS) || Character.isDigit(codePoint) || codePoint in ALLOWED_MARKS
+                    if (kept) appendCodePoint(codePoint) else append('·')
+                }
             }
         }
+
+        /** 한글 채움 문자(초성 · 중성 · 호환 · 반각) — 글자 칸에 들지만 보이지 않는다 */
+        private val HANGUL_FILLERS = setOf(0x115F, 0x1160, 0x3164, 0xFFA0)
 
         /** 글자 · 숫자 밖에서 그대로 두는 것: 빈칸 · 점 · 밑줄 · 하이픈 */
         private val ALLOWED_MARKS = setOf(' '.code, '.'.code, '_'.code, '-'.code)
