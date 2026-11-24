@@ -153,15 +153,15 @@ class IncidentStore(private val jdbc: JdbcTemplate) {
     }.toMap()
 
     /**
-     * 시험 발송의 간격 자리를 차지한다 — 마지막 시험 발송이 [interval] 이상 지났으면 [now] 로 적고 null,
-     * 아니면 적지 않고 마지막 시각을 돌려준다. 판정과 기록을 한 문장으로 해 두 자리(두 프로세스)가 동시에 와도 하나만 차지한다.
+     * 시험 발송의 간격 자리를 차지한다 — 마지막 시험 발송이 [interval] 이상 지났거나 [now] 보다 미래면(시계가 뒤로 감 — 낡은 값)
+     * [now] 로 적고 null, 아니면 적지 않고 마지막 시각을 돌려준다. 판정과 기록을 한 문장으로 해 두 자리(두 프로세스)가 동시에 와도 하나만 차지한다.
      */
     @Synchronized
     fun claimTestSend(now: Instant, interval: Duration): Instant? {
         val claimed = jdbc.update(
             """INSERT INTO test_send (id, last_sent_at) VALUES (1, ?)
-               ON CONFLICT(id) DO UPDATE SET last_sent_at = excluded.last_sent_at WHERE test_send.last_sent_at <= ?""",
-            stamp(now), stamp(now.minus(interval)),
+               ON CONFLICT(id) DO UPDATE SET last_sent_at = excluded.last_sent_at WHERE test_send.last_sent_at <= ? OR test_send.last_sent_at > ?""",
+            stamp(now), stamp(now.minus(interval)), stamp(now),
         )
         if (claimed > 0) return null
         return Instant.parse(jdbc.queryForObject("SELECT last_sent_at FROM test_send WHERE id = 1", String::class.java)!!)

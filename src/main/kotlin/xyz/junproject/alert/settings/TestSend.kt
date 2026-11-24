@@ -26,7 +26,8 @@ class TestSend(
     private val clock: () -> Instant = Instant::now,
 ) {
     private val log = LoggerFactory.getLogger("alert")
-    private var lastSentHere: Instant? = null   // 이 자리가 마지막으로 차지한 시각 — DB 를 쓸 수 없을 때의 제한([claim] 안에서만 읽고 쓴다)
+    private var lastSentHere: Instant? = null   // 이 자리가 마지막으로 차지한 시각([claim] 안에서만 읽고 쓴다)
+    private var lastScopeHere = RateLimitScope.THIS_SLOT   // 그때 간격을 어디까지 걸었나 — 이 자리의 기억으로 거절할 때 그대로 밝힌다
 
     fun send(requestedBy: String): TestSendResult {
         val now = clock()
@@ -41,25 +42,35 @@ class TestSend(
 
     /**
      * 발송을 시작하기 전에 간격 자리를 차지한다. 차지했으면 기다릴 시간 null, 아니면 남은 시간.
-     * 두 자리가 함께 보는 DB 로 세고, DB 를 쓸 수 없으면 이 자리의 기억으로만 센다.
+     * 이 자리의 기억을 먼저 본다(DB 장애 중에 보낸 것은 DB 에 없다 — 그리고 DB 를 먼저 차지한 뒤 기억으로 거절하면
+     * 거절된 요청의 시각이 DB 에 남아 창이 늘어난다). 그다음 두 자리가 함께 보는 DB 로 세고, DB 를 쓸 수 없으면 기억으로만 센다.
+     * 마지막 시각이 지금보다 미래면(시계가 뒤로 감) 낡은 값으로 보고 허용한다.
      * 단순화: DB 를 쓸 수 없는 동안은 두 자리가 각자 센다 — 배포로 두 자리가 함께 떠 있으면 간격 하나에 최대 두 번 나간다. DB 가 돌아오면 다시 함께 센다.
      */
     @Synchronized
     private fun claim(now: Instant): Pair<Duration?, RateLimitScope> {
+        val lastSent = lastSentHere
+        if (lastSent != null && withinInterval(lastSent, now)) return remaining(lastSent, now) to lastScopeHere
         val history = store
         if (history != null) {
             val shared = runCatching { history.claimTestSend(now, interval) }
                 .onFailure { log.warn("alert:alert:test send limit not shared — database unavailable ({})", it.javaClass.simpleName) }
             if (shared.isSuccess) {
-                val lastSent = shared.getOrNull() ?: run { lastSentHere = now; return null to RateLimitScope.ALL_SLOTS }
-                return remaining(lastSent, now) to RateLimitScope.ALL_SLOTS
+                val sharedLastSent = shared.getOrNull() ?: return remember(now, RateLimitScope.ALL_SLOTS)
+                return remaining(sharedLastSent, now) to RateLimitScope.ALL_SLOTS
             }
         }
-        val lastSent = lastSentHere
-        if (lastSent != null && now.isBefore(lastSent.plus(interval))) return remaining(lastSent, now) to RateLimitScope.THIS_SLOT
-        lastSentHere = now
-        return null to RateLimitScope.THIS_SLOT
+        return remember(now, RateLimitScope.THIS_SLOT)
     }
+
+    private fun remember(now: Instant, scope: RateLimitScope): Pair<Duration?, RateLimitScope> {
+        lastSentHere = now
+        lastScopeHere = scope
+        return null to scope
+    }
+
+    /** 간격 안인가 — 미래의 시각은 낡은 값이라 간격 안으로 치지 않는다 */
+    private fun withinInterval(lastSent: Instant, now: Instant) = !lastSent.isAfter(now) && now.isBefore(lastSent.plus(interval))
 
     private fun remaining(lastSent: Instant, now: Instant): Duration =
         Duration.between(now, lastSent.plus(interval)).coerceIn(Duration.ofMillis(1), interval)
@@ -93,21 +104,19 @@ class TestSend(
         private val shownAt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.of("Asia/Seoul"))
 
         /**
-         * 요청에서 온 이름을 채널의 꾸밈 문법으로 읽히지 않게 한다 — 한 글자를 한 글자로 바꿔 길이는 그대로.
-         * 줄바꿈 · 제어 문자 → 빈칸(가짜 줄 · 메일 제목 머리글), `<` `>` → `‹` `›`(슬랙 `<!channel>` · `<url|글>` · 디스코드 `<@id>`),
-         * `@` → `＠`(디스코드 `@everyone` · `@here`), `[` `]` → `［` `］`(디스코드 `[글](주소)` 숨은 링크).
+         * 요청에서 온 이름에서 허용할 글자만 남긴다 — 글자 · 숫자 · 빈칸 · `.` · `_` · `-` 는 그대로, 나머지는 한 글자(코드 포인트)씩 `·`.
+         * 맨 URL · 꾸밈 문법(`*` · 백틱 · 괄호) · 멘션(`@` · `<…>`) · 줄바꿈 · 방향 제어 · 0폭 문자가 한꺼번에 사라진다.
+         * 막을 글자를 늘어놓지 않는다 — 늘어놓으면 빠지는 것이 생긴다.
          */
         fun neutralized(name: String): String = buildString(name.length) {
-            for (character in name) append(when {
-                Character.isISOControl(character) || character == ' ' || character == ' ' -> ' '
-                character == '<' -> '‹'
-                character == '>' -> '›'
-                character == '@' -> '＠'
-                character == '[' -> '［'
-                character == ']' -> '］'
-                else -> character
-            })
+            name.codePoints().forEach { codePoint ->
+                if (Character.isLetter(codePoint) || Character.isDigit(codePoint) || codePoint in ALLOWED_MARKS) appendCodePoint(codePoint)
+                else append('·')
+            }
         }
+
+        /** 글자 · 숫자 밖에서 그대로 두는 것: 빈칸 · 점 · 밑줄 · 하이픈 */
+        private val ALLOWED_MARKS = setOf(' '.code, '.'.code, '_'.code, '-'.code)
     }
 }
 
@@ -132,6 +141,7 @@ object MonitorAddressMask {
     /**
      * 질의 문자열과 조각을 먼저 뗀다(비밀값이 실릴 수 있다). 경로 앞(스킴 · 계정 · 호스트 · 포트 자리)에서는 환경 변수의 이름만 남기고,
      * 경로는 그대로 둔다. 스킴이 없는 틀(`${MONITOR_LLM_URL}/health`)은 첫 `/` 앞이 주소 자리다.
+     * 갈라 낸 경로에 `//` 나 `@` 가 남는 이상한 꼴이면 환경 변수 이름만(없으면 빈 값) 낸다.
      */
     fun mask(urlTemplate: String): String {
         val withoutQuery = urlTemplate.substringBefore('?').substringBefore('#')
@@ -139,6 +149,9 @@ object MonitorAddressMask {
         val authorityStart = if (schemeEnd >= 0) schemeEnd + 3 else 0
         val pathStart = withoutQuery.indexOf('/', authorityStart).takeIf { it >= 0 } ?: withoutQuery.length
         val names = placeholder.findAll(withoutQuery.substring(0, pathStart)).joinToString("") { it.value }
-        return names + withoutQuery.substring(pathStart)
+        val path = withoutQuery.substring(pathStart)
+        // 경로에 `//` 나 `@` 가 남으면 주소 자리를 잘못 갈랐다(스킴을 환경 변수로 · 비밀번호에 `/`) — 경로를 내지 않는다
+        if (path.contains("//") || path.contains('@')) return names
+        return names + path
     }
 }
