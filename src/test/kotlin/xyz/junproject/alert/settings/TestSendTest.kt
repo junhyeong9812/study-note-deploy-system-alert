@@ -246,4 +246,42 @@ class TestSendTest {
         assertEquals(1, store.recent(100).size)
         assertEquals(downState, store.loadDownStates()["llm"], "다시 알림 시각 · 상태가 바뀌었다")
     }
+
+    @Test
+    fun `시계가 뒤로 가면 마지막 시각을 낡은 값으로 보고 허용한다 - DB 가 있을 때`(@TempDir directory: Path) {
+        val testSend = testSend(open(directory))
+        sent(testSend.send("jun"))
+        now = now.minus(Duration.ofHours(1))         // 시계가 한 시간 뒤로 — 마지막 시각이 미래가 됐다
+        sent(testSend.send("jun"))
+        now = now.plusSeconds(10)
+        tooSoon(testSend.send("jun"))                // 허용한 뒤로는 다시 간격을 센다
+        assertEquals(listOf(2, 2, 2), receivedCounts())
+    }
+
+    @Test
+    fun `시계가 뒤로 가면 마지막 시각을 낡은 값으로 보고 허용한다 - DB 가 없을 때`() {
+        val testSend = testSend(store = null)
+        sent(testSend.send("jun"))
+        now = now.minus(Duration.ofHours(1))
+        assertEquals(RateLimitScope.THIS_SLOT, sent(testSend.send("jun")).limitScope)
+        now = now.plusSeconds(10)
+        tooSoon(testSend.send("jun"))
+        assertEquals(listOf(2, 2, 2), receivedCounts())
+    }
+
+    @Test
+    fun `DB 장애 중에 보낸 직후 DB 가 돌아와도 30초 안의 둘째 요청은 거절한다`(@TempDir directory: Path) {
+        val dataSource = dataSource(directory)
+        val testSend = testSend(open(directory, dataSource))
+        sent(testSend.send("jun"))                   // DB 에 남은 마지막 시각 — 곧 오래된 값이 된다
+        now = now.plus(Duration.ofHours(1))
+        dataSource.broken = true
+        assertEquals(RateLimitScope.THIS_SLOT, sent(testSend.send("jun")).limitScope)   // 장애 중 — 이 자리의 기억에만 남는다
+        now = now.plusSeconds(10)
+        dataSource.broken = false                    // DB 가 돌아왔다(DB 의 마지막 시각은 한 시간 전)
+        tooSoon(testSend.send("jun"))
+        assertEquals(listOf(2, 2, 2), receivedCounts(), "DB 가 돌아오자마자 간격 안에 또 보냈다")
+        now = now.plusSeconds(20)
+        sent(testSend.send("jun"))
+    }
 }

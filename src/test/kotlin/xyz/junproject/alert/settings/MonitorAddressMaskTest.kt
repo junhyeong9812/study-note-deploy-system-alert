@@ -38,4 +38,16 @@ class MonitorAddressMaskTest {
         assertEquals("/health", MonitorAddressMask.mask("http://localhost:47615/health#MARKER-fragment-Rr8t"))
         assertEquals("\${MONITOR_X_URL}/", MonitorAddressMask.mask("\${MONITOR_X_URL}/?a=1&token=MARKER-query-Gg2w#MARKER-frag"))
     }
+
+    @Test
+    fun `가린 결과에 이중 빗금이나 계정 표시가 남는 이상한 꼴은 경로를 내지 않는다`() {
+        val schemeFromEnvironment = MonitorAddressMask.mask("\${MONITOR_SCHEME}//203.0.113.9:8080/health")
+        for (forbidden in listOf("203.0.113.9", "8080", "//")) {
+            assertFalse(schemeFromEnvironment.contains(forbidden), "'$forbidden' 가 남았다: $schemeFromEnvironment")
+        }
+        val slashInPassword = MonitorAddressMask.mask("http://user:pa/ss@203.0.113.9:8080/health")
+        for (forbidden in listOf("@", "203.0.113.9", "8080", "ss")) {
+            assertFalse(slashInPassword.contains(forbidden), "'$forbidden' 가 남았다: $slashInPassword")
+        }
+    }
 }

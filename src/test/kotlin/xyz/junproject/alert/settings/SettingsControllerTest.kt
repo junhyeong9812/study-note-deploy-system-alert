@@ -334,6 +334,42 @@ class SettingsControllerTest {
     }
 
     @Test
+    fun `이름은 글자 · 숫자 · 빈칸 · 점 · 밑줄 · 하이픈만 남기고 나머지는 한 글자씩 가운뎃점으로 바꾼다`() {
+        // 보낸 조각 → 받는 쪽 셋의 본문에 있어야 할 꼴. 괄호 · 대괄호는 알림 틀([알림] · (KST))에도 있어 본문 전체에서 찾지 않고 이 꼴로 본다.
+        val expectedPieces = linkedMapOf(
+            "김준" to "김준",
+            "kim.jun-1_a" to "kim.jun-1_a",
+            "https://x.example/a?b=1" to "https···x.example·a·b·1",
+            "**굵게**" to "··굵게··",
+            "`코드`" to "·코드·",
+            "@everyone" to "·everyone",
+            "<@123>" to "··123·",
+            "<!channel>" to "··channel·",
+            "[글](https://x)" to "·글··https···x·",
+            "a\u202Eb" to "a·b",
+            "c\u200Bd" to "c·d",
+            "e\nf" to "e·f",
+            "g\th" to "g·h",
+        )
+        val name = expectedPieces.keys.joinToString(" ") + " i\uD83D\uDE00j"     // 끝에 이모지(글자가 아님)
+        results(testSend(requestedBy(name))).forEach(::assertDelivered)
+
+        val received = mapOf(
+            "discord" to mapper.readTree(discord.bodies.single()).path("content").asString(),
+            "slack" to mapper.readTree(slack.bodies.single()).path("text").asString(),
+            "mail" to mail.sent.single().let { "${it.subject}\n${it.text}" },
+        )
+        for ((channel, text) in received) {
+            assertTrue(text.contains(expectedPieces.values.joinToString(" ")), "$channel 본문에 바꾼 이름이 없다: $text")
+            assertTrue(Regex("i·{1,2}j").containsMatchIn(text), "$channel 이모지가 가운뎃점이 되지 않았다: $text")
+            for (forbidden in listOf("://", "https://x.example", "**", "`", "@", "<", ">", "](", "?b=", "\u202E", "\u200B", "\t", "\uD83D")) {
+                assertFalse(text.contains(forbidden), "$channel 본문에 '$forbidden' 가 남았다: $text")
+            }
+            assertFalse(text.contains("e\nf"), "$channel 이름의 줄바꿈이 남았다: $text")
+        }
+    }
+
+    @Test
     fun `이름이 없거나 비면 422 로 거절하고 보내지 않는다`() {
         for (body in listOf("""{}""", """{"requested_by":""}""", """{"requested_by":"   "}""")) {
             val reply = testSend(body)
