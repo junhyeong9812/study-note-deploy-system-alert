@@ -1,0 +1,6 @@
+# 설정 보기 테스트 전용 — 주소에 표식(호스트 · IP · 포트 · 질의 값 · 조각)을 넣어 응답에 새지 않는지 본다. 감시 바퀴는 돌지 않는다.
+# llm 은 늘 있는 환경 변수 HOME 을 빌려 "환경 변수의 이름이 남는가"를 본다(값은 쓰지 않는다 — 부르지 않는다).
+monitors:
+  - { name: front,        url: "http://marker-monitor-host.invalid:47613/#marker-fragment-Pw3d" }
+  - { name: backend-deps, url: "http://203.0.113.77:47614/api/health/dependencies?token=MARKER-query-token-Vb6n", expect: components }
+  - { name: llm,          url: "http://localhost:47615${HOME}/health" }
