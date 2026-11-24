@@ -27,6 +27,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.sql.DataSource
@@ -283,5 +284,96 @@ class TestSendTest {
         assertEquals(listOf(2, 2, 2), receivedCounts(), "DB 가 돌아오자마자 간격 안에 또 보냈다")
         now = now.plusSeconds(20)
         sent(testSend.send("jun"))
+    }
+
+    @Test
+    fun `같은 자리에 거의 동시에 온 두 요청 가운데 늦게 차지하러 들어온 것은 거절한다`() {
+        // 첫 요청은 시계를 읽는 자리에서 멈춘다(그 요청의 지금 = T). 둘째 요청은 5ms 늦은 시각을 읽는다.
+        // 구현이 시계를 차지하는 잠금 안에서 읽든 밖에서 읽든 같은 결과여야 한다 — 순서는 래치로 고정한다.
+        val firstRead = CountDownLatch(1)
+        val releaseFirst = CountDownLatch(1)
+        val secondRead = CountDownLatch(1)
+        val firstNow = now
+        val calls = java.util.concurrent.atomic.AtomicInteger(0)
+        val testSend = TestSend(channels(), null, interval) {
+            if (calls.getAndIncrement() == 0) {
+                firstRead.countDown()
+                releaseFirst.await(10, TimeUnit.SECONDS)
+                firstNow
+            } else {
+                secondRead.countDown()
+                firstNow.plusMillis(5)
+            }
+        }
+        val executor = Executors.newFixedThreadPool(2)
+        try {
+            val first = executor.submit<TestSendResult> { testSend.send("jun") }
+            assertTrue(firstRead.await(5, TimeUnit.SECONDS), "첫 요청이 시계를 읽지 않았다")
+            val second = executor.submit<TestSendResult> { testSend.send("jun") }
+            // 시계를 잠금 밖에서 읽는 구현이면 둘째 요청이 먼저 끝까지 간다 / 잠금 안에서 읽는 구현이면 첫 요청 뒤에 줄 선다
+            if (secondRead.await(2, TimeUnit.SECONDS)) runCatching { second.get(5, TimeUnit.SECONDS) }
+            releaseFirst.countDown()
+            val results = listOf(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS))
+            assertEquals(1, results.count { it is TestSendResult.Sent }, "두 요청이 모두 나갔거나 모두 막혔다: $results")
+            assertEquals(1, results.count { it is TestSendResult.TooSoon }, "$results")
+            assertEquals(listOf(1, 1, 1), receivedCounts(), "간격 안에 두 번 보냈다")
+        } finally {
+            releaseFirst.countDown(); executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `시계가 2초 어긋난 두 자리에서 앞선 발송이 미래로 보여도 거절한다`(@TempDir directory: Path) {
+        val blue = testSend(open(directory))
+        val green = TestSend(channels(), open(directory), interval) { now.minusSeconds(2) }   // green 의 시계는 2초 느리다
+        sent(blue.send("jun"))
+        now = now.plusSeconds(1)                     // 1초 뒤 — green 에게는 blue 의 발송이 1초 미래다
+        tooSoon(green.send("jun"))
+        assertEquals(listOf(1, 1, 1), receivedCounts(), "어긋난 시계의 다른 자리가 간격 안에 또 보냈다")
+    }
+
+    @Test
+    fun `시계가 10초 뒤로 가면 간격 안으로 보고 거절한다 - DB 가 있을 때`(@TempDir directory: Path) {
+        val blue = testSend(open(directory))
+        val green = testSend(open(directory))        // 이 자리의 기억이 없는 쪽 — DB 의 판정만 본다
+        sent(blue.send("jun"))
+        now = now.minusSeconds(10)
+        tooSoon(blue.send("jun"))
+        tooSoon(green.send("jun"))
+        assertEquals(listOf(1, 1, 1), receivedCounts())
+    }
+
+    @Test
+    fun `시계가 10초 뒤로 가면 간격 안으로 보고 거절한다 - DB 가 없을 때`() {
+        val testSend = testSend(store = null)
+        sent(testSend.send("jun"))
+        now = now.minusSeconds(10)
+        tooSoon(testSend.send("jun"))
+        assertEquals(listOf(1, 1, 1), receivedCounts())
+    }
+
+    @Test
+    fun `마지막 시각이 지금 더하기 간격과 같으면 거절하고 그보다 1ms 더 미래면 낡은 값으로 보고 허용한다 - DB 가 있을 때`(@TempDir directory: Path) {
+        val blue = testSend(open(directory))
+        val green = testSend(open(directory))
+        val lastSent = now
+        sent(blue.send("jun"))
+        now = lastSent.minus(interval)               // 마지막 시각 = 지금 + 간격
+        tooSoon(green.send("jun"))
+        now = lastSent.minus(interval).minusMillis(1)   // 마지막 시각 = 지금 + 간격 + 1ms
+        sent(green.send("jun"))
+        assertEquals(listOf(2, 2, 2), receivedCounts())
+    }
+
+    @Test
+    fun `마지막 시각이 지금 더하기 간격과 같으면 거절하고 그보다 1ms 더 미래면 낡은 값으로 보고 허용한다 - DB 가 없을 때`() {
+        val testSend = testSend(store = null)
+        val lastSent = now
+        sent(testSend.send("jun"))
+        now = lastSent.minus(interval)
+        tooSoon(testSend.send("jun"))
+        now = lastSent.minus(interval).minusMillis(1)
+        sent(testSend.send("jun"))
+        assertEquals(listOf(2, 2, 2), receivedCounts())
     }
 }

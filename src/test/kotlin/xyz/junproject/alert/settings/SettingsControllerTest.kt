@@ -369,6 +369,39 @@ class SettingsControllerTest {
         }
     }
 
+    private fun receivedTexts(): Map<String, String> = mapOf(
+        "discord" to mapper.readTree(discord.bodies.single()).path("content").asString(),
+        "slack" to mapper.readTree(slack.bodies.single()).path("text").asString(),
+        "mail" to mail.sent.single().let { "${it.subject}\n${it.text}" },
+    )
+
+    @Test
+    fun `분해형으로 온 악센트 글자는 조합형으로 맞춰 가운뎃점으로 갈라지지 않는다`() {
+        results(testSend(requestedBy("Jos\u0065\u0301 kim"))).forEach(::assertDelivered)   // e + U+0301(결합 악센트)
+        for ((channel, text) in receivedTexts()) {
+            assertTrue(text.contains("Jos\u00E9 kim"), "$channel 에 é 가 온전하지 않다: $text")
+            assertFalse(text.contains("Jose·") || text.contains("\u0301"), "$channel 에서 악센트가 갈라졌다: $text")
+        }
+    }
+
+    @Test
+    fun `분해형 한글은 온전한 한 글자로 남는다`() {
+        results(testSend(requestedBy("\u1112\u1161\u11AB\uAE00"))).forEach(::assertDelivered)   // ㅎ+ㅏ+ㄴ(첫가끝) + 글
+        for ((channel, text) in receivedTexts()) {
+            assertTrue(text.contains("\uD55C\uAE00"), "$channel 에 '한글'이 온전하지 않다: $text")
+            assertFalse(text.contains("\u1112") || text.contains("·글"), "$channel 에서 한글이 갈라졌다: $text")
+        }
+    }
+
+    @Test
+    fun `보이지 않는 한글 채움 문자는 글자로 치지 않고 가운뎃점이 된다`() {
+        results(testSend(requestedBy("a\u115Fb c\u1160d e\u3164f g\uFFA0h"))).forEach(::assertDelivered)
+        for ((channel, text) in receivedTexts()) {
+            assertTrue(text.contains("a·b c·d e·f g·h"), "$channel 에서 채움 문자가 가운뎃점이 되지 않았다: $text")
+            for (filler in listOf("\u115F", "\u1160", "\u3164", "\uFFA0")) assertFalse(text.contains(filler), "$channel: $text")
+        }
+    }
+
     @Test
     fun `이름이 없거나 비면 422 로 거절하고 보내지 않는다`() {
         for (body in listOf("""{}""", """{"requested_by":""}""", """{"requested_by":"   "}""")) {
