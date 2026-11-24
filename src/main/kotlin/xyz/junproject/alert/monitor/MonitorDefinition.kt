@@ -46,4 +46,14 @@ object MonitorsFile {
         require(duplicated.isEmpty()) { "monitors.yml: 이름이 겹친다 $duplicated" }
         return definitions
     }
+
+    /** 이름 → 주소 틀(환경 변수를 채우기 전의 글). 설정 보기가 가린 주소를 만들 때 쓴다 — 형식은 [parse] 가 기동 때 이미 검사했다. */
+    fun addressTemplates(yamlText: String): Map<String, String> =
+        ((Yaml().load<Any?>(yamlText) as? Map<*, *>)?.get("monitors") as? List<*>).orEmpty()
+            .mapNotNull { entry ->
+                val fields = entry as? Map<*, *> ?: return@mapNotNull null
+                val name = fields["name"] as? String ?: return@mapNotNull null
+                val template = fields["url"] as? String ?: return@mapNotNull null
+                name to template
+            }.toMap()
 }

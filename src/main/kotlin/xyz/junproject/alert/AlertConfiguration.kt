@@ -23,6 +23,7 @@ import xyz.junproject.alert.notify.FallbackNotifier
 import xyz.junproject.alert.notify.MailChannel
 import xyz.junproject.alert.notify.NotificationChannel
 import xyz.junproject.alert.notify.SlackChannel
+import xyz.junproject.alert.settings.TestSend
 import java.io.File
 import java.nio.charset.StandardCharsets
 
@@ -99,6 +100,10 @@ class AlertConfiguration {
 
     @Bean
     fun eventIntake(notifier: FallbackNotifier, storeHolder: StoreHolder) = EventIntake(notifier, storeHolder.store)
+
+    /** 시험 발송 — 같은 채널 부품을 쓰되 발송기(FallbackNotifier)를 거치지 않는다(실패한 시험 알림이 미발송 보관함에 들어가지 않게). */
+    @Bean
+    fun testSend(channels: List<NotificationChannel>, storeHolder: StoreHolder) = TestSend(channels, storeHolder.store)
 }
 
 /** 기록 저장소가 없을 수도 있다는 것을 타입으로 드러낸다 */

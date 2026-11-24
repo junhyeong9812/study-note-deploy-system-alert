@@ -42,8 +42,8 @@ sealed interface MonitorTransition {
  * [failureThreshold]번 연속 실패하면 DOWN(알림 1회), 돌아오면 복구 알림, DOWN이 이어지면 [remindEvery]마다 다시 알린다.
  */
 class MonitorTracker(
-    private val failureThreshold: Int = 3,
-    private val remindEvery: Duration = Duration.ofHours(1),
+    val failureThreshold: Int = 3,
+    val remindEvery: Duration = Duration.ofHours(1),
 ) {
     /** 새 확인 결과를 반영한 다음 상태와, 알릴 일이 있으면 그 변화를 돌려준다. */
     fun advance(monitor: String, state: MonitorState, result: ProbeResult, now: Instant): Pair<MonitorState, MonitorTransition?> {

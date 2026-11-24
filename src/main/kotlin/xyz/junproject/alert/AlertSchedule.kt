@@ -27,7 +27,7 @@ class AlertSchedule(
         try { round.run() } catch (error: Exception) { log.error("alert:alert:round failed: {}", error.message, error) }
     }
 
-    @Scheduled(cron = "\${alert.summary-cron:0 0 9 * * *}", zone = "Asia/Seoul")
+    @Scheduled(cron = "\${alert.summary-cron:0 0 9 * * *}", zone = SUMMARY_ZONE)
     fun sendDailySummary() {
         if (!round.active) return   // 대기 자리는 보내지 않는다 — 활성 자리 하나만
         val now = Instant.now()
@@ -52,5 +52,10 @@ class AlertSchedule(
         runCatching { storeHolder.store?.deleteOlderThan(Instant.now().minus(Duration.ofDays(30))) }
             .onSuccess { log.info("alert:alert:deleted {} incidents older than 30 days", it ?: 0) }
             .onFailure { log.warn("alert:alert:retention failed: {}", it.message) }
+    }
+
+    companion object {
+        /** 하루 요약의 시간대 — 설정 보기도 이 값을 낸다 */
+        const val SUMMARY_ZONE = "Asia/Seoul"
     }
 }

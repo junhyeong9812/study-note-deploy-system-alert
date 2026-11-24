@@ -19,6 +19,7 @@ spring:
       mail.smtp.writetimeout: 5000
 alert:
   secret: ${ALERT_SECRET:}                      # 사건 접수·조회용 서버 간 비밀값 — 비어 있으면 전부 거절
+  settings-secret: ${ALERT_SETTINGS_SECRET:}    # 설정 보기·시험 발송 전용(ALERT_SECRET 과 다른 값) — 비어 있으면 두 경로를 늘 거절
   discord-webhook-url: ${DISCORD_WEBHOOK_URL:}  # 비밀값 — 서버 .env 에만
   slack-webhook-url: ${SLACK_WEBHOOK_URL:}
   mail-from: ${MAIL_FROM:}

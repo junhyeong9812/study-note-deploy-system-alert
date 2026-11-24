@@ -28,7 +28,7 @@ data class AlertEvent(
 class EventIntake(
     private val notifier: FallbackNotifier,
     private val store: IncidentStore?,
-    private val suppressFor: Duration = Duration.ofMinutes(10),
+    val suppressFor: Duration = Duration.ofMinutes(10),
     private val clock: () -> Instant = Instant::now,
 ) {
     private val log = LoggerFactory.getLogger("alert")
