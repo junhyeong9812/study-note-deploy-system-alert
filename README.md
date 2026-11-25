@@ -28,6 +28,8 @@
 | `POST /events` | `X-Alert-Secret` | 다른 서버가 알릴 일을 보낸다: `{source, kind, severity, key, title, detail}`. 같은 `key` 는 10분에 한 번만 발송 |
 | `GET /monitors` | `X-Alert-Secret` | 대상별 현재 상태 |
 | `GET /incidents?limit=` | `X-Alert-Secret` | 알린 일의 기록(30일 보관) |
+| `GET /settings` | `X-Alert-Settings-Secret` | 지금 설정 — 감시 대상(이름 · 기준 · 가린 주소: 환경 변수 이름과 경로만) · 채널(종류 · 설정됨 · 순서) · 규칙 · 맡은 자리 여부. 비밀값 · 호스트 · IP · 포트는 내지 않는다 |
+| `POST /settings/test-send` | `X-Alert-Settings-Secret` | `{requested_by}`(200자까지). 설정된 채널마다 따로 한 번 시험 알림을 보내고 채널별 결과를 답한다. 사건 · 미발송 보관함에 남지 않는다. 두 자리를 합쳐 30초에 한 번(넘으면 429) |
 | `POST /admin/drain` | 자리의 로컬 포트로만 | 무중단 배포의 정리 알림 — 구 자리가 곧바로 감시를 내려놓는다 |
 
 ## 무중단 배포와 활성 자리
@@ -46,6 +48,7 @@
 - 발송은 전용 스레드가 한다 — 채널이 느리거나 죽어도 다음 바퀴와 사건 접수가 밀리지 않는다.
 - 모든 채널이 실패한 알림은 버리지 않고 보관했다가 다음 바퀴에 다시 보낸다(상한 200건, 넘으면 오래된 것부터 버리고 error 로그). 재시작해도 최근 24시간의 미발송 건은 기록에서 되살린다.
 - 채널 주소 같은 비밀값은 서버 `.env` 에만 둔다. `.env.example` 에 항목 이름이 있다.
+- `/settings` 두 경로는 여럿이 쓰는 `ALERT_SECRET` 이 아니라 `ALERT_SETTINGS_SECRET`(어드민과 알림 서버만)으로 연다. 비어 있으면 늘 거절하고, 앱과 다른 경로는 그대로 돈다.
 
 ## 구동
 

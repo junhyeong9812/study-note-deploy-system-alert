@@ -18,9 +18,9 @@ import java.util.concurrent.TimeUnit
  * 활성 자리일 때만 돈다([ActiveSlot]).
  */
 class MonitorRound(
-    private val definitions: List<MonitorDefinition>,
+    val definitions: List<MonitorDefinition>,
     private val probe: MonitorProbe,
-    private val tracker: MonitorTracker,
+    val tracker: MonitorTracker,
     private val notifier: FallbackNotifier,
     private val store: IncidentStore?,
     private val roundBudget: Duration = Duration.ofSeconds(10),

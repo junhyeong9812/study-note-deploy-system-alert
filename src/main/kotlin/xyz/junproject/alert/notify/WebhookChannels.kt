@@ -38,11 +38,23 @@ abstract class WebhookChannel(
             throw error
         } catch (error: Exception) {
             val cause = error.cause ?: error
-            throw IllegalStateException("$name webhook 에 닿지 못했다(${cause.javaClass.simpleName})")
+            throw WebhookFailure("$name webhook 에 닿지 못했다(${cause.javaClass.simpleName})", reasonOf(cause))
         }
-        check(status in 200..299) { "$name webhook status $status" }
+        if (status !in 200..299) throw WebhookFailure("$name webhook status $status", "status $status")
+    }
+
+    private fun reasonOf(cause: Throwable): String = when (cause) {
+        is java.util.concurrent.TimeoutException, is java.net.http.HttpTimeoutException -> "timeout"
+        is java.net.ConnectException -> "unreachable"
+        else -> "failed"
     }
 }
+
+/**
+ * 웹훅 발송 실패. 문구는 지금까지와 같고, [reason] 은 밖(시험 발송의 응답)에 내도 되는 가린 사유다 —
+ * `status <숫자>` 또는 갈래 낱말 하나(`timeout` · `unreachable` · `failed`). 주소 · 응답 본문은 어디에도 싣지 않는다.
+ */
+class WebhookFailure(message: String, val reason: String) : IllegalStateException(message)
 
 /** 디스코드 웹훅 — content 는 2000자 제한 */
 class DiscordChannel(webhookUrl: String, objectMapper: ObjectMapper, timeout: Duration = Duration.ofSeconds(5)) :
