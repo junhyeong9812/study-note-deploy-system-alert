@@ -19,7 +19,7 @@ class HttpServingSlotCheck(probeUrl: String, private val timeout: Duration = Dur
     private val client = HttpClient.newBuilder().connectTimeout(timeout).build()
 
     override fun servingSlot(): String? = try {
-        val request = HttpRequest.newBuilder(uri).timeout(timeout).GET().build()
+        val request = HttpRequest.newBuilder(uri).timeout(timeout).header(REQUEST_ID_HEADER, newRequestId()).GET().build()
         client.sendAsync(request, HttpResponse.BodyHandlers.discarding()).get(timeout.toMillis(), TimeUnit.MILLISECONDS)
             .headers().firstValue("X-Deploy-Slot").orElse(null)?.takeIf { it.isNotBlank() }
     } catch (error: InterruptedException) {

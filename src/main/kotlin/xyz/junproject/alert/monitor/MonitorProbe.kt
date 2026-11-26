@@ -20,7 +20,8 @@ class HttpMonitorProbe(
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     override fun check(definition: MonitorDefinition): ProbeResult = try {
-        val request = HttpRequest.newBuilder(URI.create(definition.url)).timeout(timeout).GET().build()
+        val request = HttpRequest.newBuilder(URI.create(definition.url)).timeout(timeout)
+            .header(REQUEST_ID_HEADER, newRequestId()).GET().build()
         // 본문까지 포함해 시간 제한 안에 끝나야 한다(헤더만 보내고 본문을 끄는 대상도 실패)
         val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
             .get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS)
