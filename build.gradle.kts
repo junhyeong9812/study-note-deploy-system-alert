@@ -39,4 +39,5 @@ kotlin {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	environment("SERVER_NAME", "front")   // 호출자 이름은 코드의 상수 — 설정에서 읽으면 테스트가 알아채게 다른 값을 둔다
 }
