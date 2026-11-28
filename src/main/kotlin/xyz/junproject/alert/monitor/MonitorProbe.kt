@@ -12,6 +12,12 @@ fun interface MonitorProbe {
     fun check(definition: MonitorDefinition): ProbeResult
 }
 
+/**
+ * `X-Caller-Service` 를 싣지 않는 감시 대상의 이름.
+ * 규약 2.1 의 서비스 목록에 없고 앞에 nginx 가 없는 대상 — 새 감시 대상을 더할 때 여기에 넣을지 본다.
+ */
+private val OUTSIDE_MONITORS = setOf("claude-runner")
+
 /** HTTP 로 확인한다 — 시간 제한을 넘기면 실패. 어떤 예외도 밖으로 내보내지 않고 실패 결과로 돌려준다. */
 class HttpMonitorProbe(
     private val objectMapper: ObjectMapper,
@@ -20,8 +26,10 @@ class HttpMonitorProbe(
     private val client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
 
     override fun check(definition: MonitorDefinition): ProbeResult = try {
-        val request = HttpRequest.newBuilder(URI.create(definition.url)).timeout(timeout)
-            .header(REQUEST_ID_HEADER, newRequestId()).GET().build()
+        val builder = HttpRequest.newBuilder(URI.create(definition.url)).timeout(timeout)
+            .header(REQUEST_ID_HEADER, newRequestId())
+        if (definition.name !in OUTSIDE_MONITORS) builder.header(CALLER_SERVICE_HEADER, CALLER_SERVICE)
+        val request = builder.GET().build()
         // 본문까지 포함해 시간 제한 안에 끝나야 한다(헤더만 보내고 본문을 끄는 대상도 실패)
         val response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
             .get(timeout.toMillis(), java.util.concurrent.TimeUnit.MILLISECONDS)
