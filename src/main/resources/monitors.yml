@@ -12,3 +12,5 @@ monitors:
   - { name: deploy-agent-llm,     url: "${MONITOR_DEPLOY_AGENT_LLM_URL}/health" }
   - { name: observe,         url: "${MONITOR_OBSERVE_URL}/health" }
   - { name: admin,           url: "${MONITOR_ADMIN_URL}/api/health" }
+  # Claude 실행 자리 — 죽음 · 토큰 없음 · 장부 못 씀 · 이어지는 실패(claude_failing)가 200 이 아닌 답으로 드러난다
+  - { name: claude-runner,   url: "${MONITOR_CLAUDE_RUNNER_URL}/health" }
